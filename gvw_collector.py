@@ -1,6 +1,7 @@
-import os, json, sys, pandas as pd
+import os, json, sys, pandas as pd, time, random
 from datetime import datetime, timedelta
 import requests
+
 
 # ================= CONFIGURATION =================
 DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
@@ -20,21 +21,47 @@ manual_load_env()
 FINMIND_TOKEN = os.environ.get('FINMIND_TOKEN', '')
 
 def get_finmind_data(dataset, params=None):
-    """Standard FinMind v4 API wrapper using the /data endpoint"""
+    """Standard FinMind v4 API wrapper with retry logic and rate limiting"""
     url = "https://api.finmindtrade.com/api/v4/data"
     params = params or {}
     params['dataset'] = dataset
     params['token'] = FINMIND_TOKEN
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        res_json = response.json()
-        if isinstance(res_json, dict) and 'data' in res_json:
-            return res_json['data']
-        return res_json
-    except Exception as e:
-        print(f"API Error (dataset={dataset}): {e}")
-        return None
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            
+            # 1. Handle Rate Limits (402) or Token Issues (400)
+            if response.status_code == 402:
+                print(f"\n❌ Rate limit exceeded (402). Stopping batch to avoid ban.")
+                sys.exit(1) 
+            if response.status_code == 400:
+                print(f"\n❌ Token illegal or parameter error (400). Please check .env.")
+                sys.exit(1)
+            
+            response.raise_for_status()
+            res_json = response.json()
+            if isinstance(res_json, dict) and 'data' in res_json:
+                return res_json['data']
+            return res_json
+            
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else 0
+            # 2. Retry only on 5xx Server Errors using Exponential Backoff
+            if 500 <= status_code < 600:
+                wait_time = (2 ** attempt) + random.random()
+                print(f"⚠️ Server Error {status_code}. Retrying in {wait_time:.2f}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"API Error (dataset={dataset}): {e}")
+                return None
+        except Exception as e:
+            print(f"Unexpected Error (dataset={dataset}): {e}")
+            return None
+            
+    print(f"Max retries reached for dataset {dataset}.")
+    return None
 
 def get_universe():
     """Get all Taiwan stocks list with names, excluding ETFs/Funds (00 prefix)"""
@@ -112,6 +139,8 @@ def main():
         
         if should_update:
             print(f"Fetching data for {ticker}...", end=' ')
+            # Anti-Throttling: Small random sleep before each stock
+            time.sleep(random.uniform(0.2, 0.6))
             stock_data = get_stock_data(ticker)
             if stock_data['prices'] and stock_data['financials']:
                 final_data = {

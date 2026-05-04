@@ -3,7 +3,7 @@ from datetime import datetime
 
 # ================= CONFIGURATION =================
 DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
-RESULT_FILE = '/home/pi/.hermes/gvw_screener/top_10_rank.json'
+RESULT_FILE = '/home/pi/.hermes/gvw_screener/all_rank.json'
 
 def calculate_momentum_score(prices_df):
     """Calculates momentum based on 3, 6, 12 month returns"""
@@ -53,14 +53,17 @@ def calculate_entry_signal(prices_df):
         return "⚪ 中立/觀察"
 
 def calculate_quality_score(financials_data):
-    """Calculate ROE manually: IncomeAfterTaxes / EquityAttributableToOwnersOfParent"""
+    """Calculate ROE manually: IncomeAfterTaxes / EquityAttributableToOwnersOfParent
+    Ensures both values are positive to avoid 'negative/negative = positive' trap.
+    """
     try:
         df = pd.DataFrame(financials_data)
         # Find the most recent Net Income and Total Equity
         net_income = df[df['type'] == 'IncomeAfterTaxes'].sort_values('date', ascending=False).iloc[0]['value']
         equity = df[df['type'] == 'EquityAttributableToOwnersOfParent'].sort_values('date', ascending=False).iloc[0]['value']
         
-        if equity != 0:
+        # Quality Filter: Both Net Income and Equity must be positive
+        if net_income > 0 and equity > 0:
             return float(net_income / equity)
     except Exception:
         pass
@@ -135,15 +138,15 @@ def main():
     
     df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_rank'] * 0.3) + (df_results['q_rank'] * 0.3)
     
-    top_10 = df_results.sort_values('final_score', ascending=False).head(10)
-    
-    top_10_list = top_10[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_rank', 'q_rank']].to_dict('records')
+    # Save all results for flexible reporting
+    full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_rank', 'q_rank']].to_dict('records')
     with open(RESULT_FILE, 'w') as f:
-        json.dump(top_10_list, f)
+        json.dump(full_results, f)
     
-    print("\nTop 10 Rank complete.")
-    for i, row in enumerate(top_10_list, 1):
-        print(f"{i}. {row['name']} ({row['ticker']}) - Score: {row['final_score']:.2f} | 狀態: {row['entry_signal']}")
+    print(f"\nRank analysis complete. Saved {len(full_results)} stocks to {RESULT_FILE}")
+    top_10 = df_results.sort_values('final_score', ascending=False).head(10)
+    for i, row in enumerate(top_10.itertuples(), 1):
+        print(f"{i}. {row.name} ({row.ticker}) - Score: {row.final_score:.2f} | 狀態: {row.entry_signal}")
 
 if __name__ == "__main__":
     main()
