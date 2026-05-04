@@ -37,7 +37,7 @@ def get_finmind_data(dataset, params=None):
         return None
 
 def get_universe():
-    """Get all Taiwan stocks list with names using TaiwanStockInfo dataset"""
+    """Get all Taiwan stocks list with names, excluding ETFs/Funds (00 prefix)"""
     if os.path.exists(UNIVERSE_FILE):
         with open(UNIVERSE_FILE, 'r') as f:
             return json.load(f)
@@ -46,10 +46,12 @@ def get_universe():
     data = get_finmind_data('TaiwanStockInfo')
     if data and isinstance(data, list):
         # Store as a dictionary: {stock_id: stock_name}
-        universe = {item['stock_id']: item.get('stock_name', 'Unknown') for item in data}
+        # FILTER: Exclude tickers starting with '00' (ETFs, Funds, etc.)
+        universe = {item['stock_id']: item.get('stock_name', 'Unknown') 
+                    for item in data if not item['stock_id'].startswith('00')}
         with open(UNIVERSE_FILE, 'w') as f:
             json.dump(universe, f)
-        print(f"Universe updated: {len(universe)} stocks found.")
+        print(f"Universe updated: {len(universe)} eligible stocks found (ETFs excluded).")
         return universe
     print(f"Unexpected data format for universe: {type(data)}")
     return {}
