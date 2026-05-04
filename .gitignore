@@ -1,0 +1,7 @@
+data/
+*.json
+.env
+__pycache__/
+test_*.py
+run_*.sh
+run_collector.py
