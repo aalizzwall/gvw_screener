@@ -13,23 +13,22 @@ def calculate_momentum_score(prices_df, market_df=None):
     if len(prices_df) < 252:
         return 0
     
+    # 1. Calculate Momentum with safety checks
+    def safe_div(n, d):
+        return n / d if d > 0 else 0
+
     current_price = prices_df['close'].iloc[-1]
-    ret_3m = (current_price / prices_df['close'].iloc[-63]) - 1 if len(prices_df) >= 63 else 0
-    ret_6m = (current_price / prices_df['close'].iloc[-126]) - 1 if len(prices_df) >= 126 else 0
-    ret_12m = (current_price / prices_df['close'].iloc[-252]) - 1 if len(prices_df) >= 252 else 0
+    ret_3m = safe_div(current_price, prices_df['close'].iloc[-63]) - 1 if len(prices_df) >= 63 else 0
+    ret_6m = safe_div(current_price, prices_df['close'].iloc[-126]) - 1 if len(prices_df) >= 126 else 0
+    ret_12m = safe_div(current_price, prices_df['close'].iloc[-252]) - 1 if len(prices_df) >= 252 else 0
     
     # Original GVW: Focus on 12-month momentum as primary metric
-    momentum_val = ret_12m
-    
-    # Enhanced: Combine with shorter-term momentum for stronger signals
     abs_momentum = (ret_3m + ret_6m + ret_12m) / 3
     
     if market_df is not None and not market_df.empty:
         market_close = market_df['close']
         market_ret_12m = (market_close.iloc[-1] / market_close.iloc[-252]) - 1 if len(market_close) >= 252 else 0
-        # Relative Strength: Stock 12m return vs Market 12m return
         relative_strength = ret_12m - market_ret_12m
-        
         # Boost momentum if stock outperforms market
         return abs_momentum * (1 + max(0, relative_strength))
     
@@ -38,11 +37,8 @@ def calculate_momentum_score(prices_df, market_df=None):
 def calculate_trend_score(prices_df):
     """
     Calculate Trend Score based on GVW / Stage Analysis logic.
-    Mark Minervini's Original Criteria:
-    - Stage 1: Price > MA200 (accumulation)
-    - Stage 2: Price > MA150 > MA200, MA200 slope up, price near 52-week high
-    
-    GVW does NOT use hard filters - it's a scoring system.
+    Criteria:
+    - Stage 2: Price > MA150 > MA200, MA200 slope up, price near 52-week high.
     """
     if len(prices_df) < 252:
         return 0, False
@@ -61,10 +57,7 @@ def calculate_trend_score(prices_df):
     if current_price <= sma200:
         return 0, False
     
-    # Scoring Logic (GVW doesn't use hard filters, just scoring)
     score = 0.0
-    
-    # Primary Trend Criteria
     if current_price > sma150:
         score += 0.3
     if sma150 > sma200:
@@ -72,20 +65,20 @@ def calculate_trend_score(prices_df):
     if sma200 > sma200_prev:
         score += 0.2
     
-    # Position relative to range (GVW prefers stocks trading near highs in strong trends)
-    price_low_ratio = current_price / low_52w
-    price_high_ratio = current_price / high_52w
+    # Safety check for division by zero
+    price_low_ratio = current_price / low_52w if low_52w > 0 else 0
+    price_high_ratio = current_price / high_52w if high_52w > 0 else 0
     
-    if price_low_ratio > 1.25:  # Above 52-week low by 25%+ (strong uptrend)
+    if price_low_ratio > 1.25: 
         score += 0.2
     
-    # Strict Stage 2 Check (GVW's ideal "Superbull" setup)
+    # Strict Stage 2 Check (Minervini Template)
     is_strict_trend = (
         current_price > sma150 and 
         sma150 > sma200 and 
         sma200 > sma200_prev and 
         price_low_ratio > 1.25 and 
-        price_high_ratio < 1.30  # Within 30% of 52-week high (not overextended)
+        price_high_ratio < 1.30
     )
     
     return score, is_strict_trend
@@ -93,11 +86,10 @@ def calculate_trend_score(prices_df):
 def calculate_entry_signal(prices_df):
     """
     Determine entry timing based on proximity to moving averages.
-    GVW Original: "Buy when the stock pulls back to its support levels"
-    - Pullback Buy Zone: Price near MA20/MA50 (within ~10%) but still above
-    
-    Note: This is a TIMING signal, not an EXCLUSION criteria.
-    A stock can be great even if currently in overbought territory.
+    Optimized Thresholds:
+    - Pullback Buy Zone: -5% to +12% (Allowing more room for strong leaders)
+    - Overheated: > 15% (Avoid buying climax runs)
+    - Weakening: < -5% (Below support)
     """
     if len(prices_df) < 50:
         return "數據不足"
@@ -106,42 +98,29 @@ def calculate_entry_signal(prices_df):
     sma20 = prices_df['close'].rolling(window=20).mean().iloc[-1]
     sma50 = prices_df['close'].rolling(window=50).mean().iloc[-1]
     
-    # GVW Original: Pullback means price is near support (not too far above)
     dist20 = (current_price / sma20) - 1 if sma20 > 0 else None
     dist50 = (current_price / sma50) - 1 if sma50 > 0 else None
     
-    # Signal Logic:
-    # 🟢 Pullback Buy Zone: Within ~8% above MA (price pulled back but support still strong)
-    # 🟡 Overbought Waiting for pullback: More than 8% above recent MAs
-    # 🔴 Weakening trend: Below MA20
+    # Use the tighter of the two MAs for the buy zone to ensure support
+    min_dist = min(dist20 if dist20 is not None else 999, dist50 if dist50 is not None else 999)
+    max_dist = max(dist20 if dist20 is not None else -999, dist50 if dist50 is not None else -999)
     
-    if dist20 is not None and dist20 >= -0.05 and dist20 <= 0.08:
+    if min_dist >= -0.05 and min_dist <= 0.12:
         return "🟢 回調買入區"
-    elif dist50 is not None and dist50 >= -0.10 and dist50 <= 0.08:
-        return "🟢 回調買入區"
-    elif (dist20 is not None and dist20 > 0.08) or (dist50 is not None and dist50 > 0.08):
+    elif max_dist > 0.15:
         return "🟡 過熱-待回調"
-    elif dist20 is not None and dist20 < -0.05:
+    elif min_dist < -0.05:
         return "🔴 趨勢偏弱"
     else:
         return "⚪ 中立/觀察"
 
 def calculate_quality_score(financials_data):
-    """
-    Calculate Growth & Quality: ROE and Revenue/Net Income YoY Growth
-    Mark Minervini's Original Criteria from "The Little Book that Builds Wealth":
-    - "Revenue has increased at least 20% over the past 3 years"
-    - "EPS has grown at an average annual rate of at least 15%"
-    
-    GVW Philosophy: Quality is about GROWTH and PROFITABILITY, not perfection.
-    We score growth quality, but DON'T hard-filter (unless growth is negative).
-    """
+    """Calculate Growth & Quality: ROE and Revenue/Net Income YoY Growth."""
     try:
         df = pd.DataFrame(financials_data)
         if df.empty: 
             return 0
         
-        # 1. Calculate ROE (Efficiency - Mark Minervini emphasizes high-quality management)
         net_income_df = df[df['type'] == 'IncomeAfterTaxes'].sort_values('date', ascending=False)
         equity_df = df[df['type'] == 'EquityAttributableToOwnersOfParent'].sort_values('date', ascending=False)
         
@@ -155,19 +134,11 @@ def calculate_quality_score(financials_data):
         if current_ni > 0 and current_equity > 0:
             roe = float(current_ni / current_equity)
         
-        # GVW Original: ROE should be high (typically > 15% for quality companies)
-        # But this is a SCORING metric, not a hard filter
-        roe_score = min(1.0, roe / 0.15)  # Normalize to 1.0 if ROE >= 15%
-        
-        # 2. Calculate YoY Growth (Growth - The Core of GVW Strategy)
-        # Mark Minervini: "High growth is essential"
-        # Criteria: Revenue and Net Income should be growing at least 15-20% YoY
+        roe_score = min(1.0, roe / 0.15) 
         
         growth_score = 1.0
         for item_type in ['IncomeAfterTaxes', 'Revenue']:
             type_df = df[df['type'] == item_type].sort_values('date', ascending=False)
-            
-            # Need at least 2 data points to calculate growth
             if len(type_df) < 2:
                 continue
             
@@ -175,36 +146,27 @@ def calculate_quality_score(financials_data):
             curr_date = pd.to_datetime(type_df.iloc[0]['date'])
             year_ago_date = curr_date - pd.DateOffset(years=1)
             
-            # Get value nearest to year ago
             type_df['date_dt'] = pd.to_datetime(type_df['date'])
             diff = (type_df['date_dt'] - year_ago_date).abs()
             prev_val = type_df.loc[diff.idxmin()]['value']
             
             if prev_val > 0:
                 growth = (curr_val - prev_val) / prev_val
-                
-                # GVW Original: Growth < 20% is suboptimal but not disqualifying
-                # Negative growth or declining revenue/earnings IS a red flag
                 if growth < 0.2:
-                    # Scale down quality score for low growth
-                    if growth > -0.1:  # Moderate decline or low positive growth
+                    if growth > -0.1: 
                         growth_score *= max(0.3, 0.5 + 0.2 * growth)
-                    else:  # Significant decline
-                        growth_score *= 0.1  # Heavy penalty
+                    else: 
+                        growth_score *= 0.1
                 else:
-                    # Strong growth (>= 20%), full score
                     growth_score *= 1.0
-            
             else:
                 growth_score *= 0.5
                 
         return roe_score * growth_score
-        
     except Exception:
         return 0
 
 def main():
-    # --- Market Index Loading ---
     market_index_file = '/home/pi/.hermes/gvw_screener/market_index.json'
     market_data = {}
     if os.path.exists(market_index_file):
@@ -216,7 +178,6 @@ def main():
         df_market['close'] = pd.to_numeric(df_market['close'], errors='coerce')
         df_market = df_market.dropna(subset=['close'])
     
-    # --- Progress Tracking ---
     total_universe_size = 0
     universe_file = '/home/pi/.hermes/gvw_screener/universe.json'
     if os.path.exists(universe_file):
@@ -238,7 +199,6 @@ def main():
         return
     
     print(f"Starting Rank Analysis for {collected_size} stocks...")
-    print("Note: Following Mark Minervini's GVW strategy - Quality + Growth + Momentum")
     
     all_stocks = []
     for idx, file in enumerate(files, 1):
@@ -253,30 +213,36 @@ def main():
             if not df_prices.empty:
                 df_prices['close'] = pd.to_numeric(df_prices['close'], errors='coerce')
                 df_prices = df_prices.dropna(subset=['close'])
+                
+                m_val = calculate_momentum_score(df_prices, df_market)
+                t_val, is_strict_trend = calculate_trend_score(df_prices)
+                q_val = calculate_quality_score(data['financials'])
+                entry_signal = calculate_entry_signal(df_prices)
+                is_gvw_strict = is_strict_trend and q_val > 0.3
+
+                # Find oldest price date
+                prices_list = data['prices']
+                oldest_data_date = None
+                if prices_list:
+                    dates = [p['date'] for p in prices_list if 'date' in p and isinstance(p['date'], str)]
+                    if dates:
+                        oldest_data_date = min(dates)
+
+                all_stocks.append({
+                    'ticker': ticker,
+                    'name': name,
+                    'm_val': m_val,
+                    't_val': t_val,
+                    'q_val': q_val,
+                    'entry_signal': entry_signal,
+                    'is_gvw_strict': is_gvw_strict,
+                    'oldest_data_date': oldest_data_date
+                })
             
-            m_val = calculate_momentum_score(df_prices, df_market)
-            t_val, is_strict_trend = calculate_trend_score(df_prices)
-            q_val = calculate_quality_score(data['financials'])
-            entry_signal = calculate_entry_signal(df_prices)
-            
-            # GVW Strict Check: This is for IDENTITY, not filtering
-            # A stock can be included even if it doesn't meet strict criteria
-            # But we still mark it for reference
-            is_gvw_strict = is_strict_trend and q_val > 0.3
-            
-            all_stocks.append({
-                'ticker': ticker,
-                'name': name,
-                'm_val': m_val,
-                't_val': t_val,
-                'q_val': q_val,
-                'entry_signal': entry_signal,
-                'is_gvw_strict': is_gvw_strict
-            })
-            
-            if idx % 10 == 0 or idx == collected_size:
+            if idx % 100 == 0 or idx == collected_size:
                 print(f"Analysis Progress: {idx}/{collected_size} stocks processed...")
-    
+        except Exception as e:
+            print(f"Error processing file {file}: {e}")
     
     if not all_stocks:
         print("No valid stock data for ranking.")
@@ -288,16 +254,26 @@ def main():
     df_results['t_rank'] = df_results['t_val'] 
     
     # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
-    # This is a SCORING SYSTEM, not a hard filter
     df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_rank'] * 0.3) + (df_results['q_rank'] * 0.3)
+    # Add global oldest data timestamp (earliest date across all stocks)
+    if 'oldest_data_date' in df_results.columns and not df_results['oldest_data_date'].isna().all():
+        global_oldest_date = str(df_results['oldest_data_date'].min())  # earliest date as string
+    else:
+        global_oldest_date = None
     
-    # Save all results for flexible reporting
     full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_rank', 'q_rank']].to_dict('records')
+    
+    # Write results with global oldest date as last_update_time
+    result_output = {
+        'data': full_results,
+        'last_update_time': global_oldest_date
+    }
     with open(RESULT_FILE, 'w') as f:
-        json.dump(full_results, f)
+        json.dump(result_output, f)
+    
+    print(f"System earliest data collected from: {global_oldest_date or 'N/A'}")
     
     print(f"\n✅ Rank analysis complete. Saved {len(full_results)} stocks to {RESULT_FILE}")
-    print("Top 10 by GVW Score:")
     top_10 = df_results.sort_values('final_score', ascending=False).head(10)
     for i, row in enumerate(top_10.itertuples(), 1):
         gv_tag = " [GVW Strict]" if row.is_gvw_strict else ""
