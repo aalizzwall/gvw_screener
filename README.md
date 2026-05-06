@@ -4,9 +4,9 @@
 
 ```
 gvw_screener/
-├── gvw_collector.py        # 資料採集（Tier 1-3 TTL）→ 08:00 cronjob
-├── gvw_ranker.py           # 排名計算 + 最舊資料追蹤 → 08:20 cronjob  
-├── gvw_reporter.py         # 報告生成 + K 線訊號檢測 → 08:30 cronjob
+├── gvw_collector.py        # 資料採集（Tier 1-3 TTL）→ 每小時執行 (Hermes Cronjob)
+├── gvw_ranker.py           # 排名計算 + 最舊資料追蹤 → 08:20 (Hermes Cronjob)  
+├── gvw_reporter.py         # 報告生成 + K 線訊號檢測 → 08:30 (Hermes Cronjob)
 ├── gvw_signal_detector.py  # K 線三步檢查支援檔案（選配）
 ├── all_rank.json           # 排名結果輸出（包含 last_update_time）
 ├── health_status.json      # 健康狀態追蹤（dead-stock 隔離）
@@ -17,7 +17,7 @@ gvw_screener/
 
 | 任務 | 程式檔 | cron expression | 說明 |
 |------|--------|-----------------|------|
-| 資料採集 | `gvw_collector.py` | `0 * * * *` (每日 08:00) | Tier 1→2→3 TTL，最舊資料優先更新 |
+| 資料採集 | `gvw_collector.py` | `0 * * * *` (每小時) | Tier 1→2→3 TTL，最舊資料優先更新 |
 | 排名計算 | `gvw_ranker.py` | `20 8 * * *` (每日 08:20) | 計算排名 + 紀錄全局最舊時間 |
 | 報告生成 | `gvw_reporter.py` | `30 8 * * *` (每日 08:30) | 三欄位報告 + K 線訊號檢查 |
 
@@ -123,37 +123,13 @@ final_score = (momentum_rank × 40%) + \
 | **成長過濾** | ❌ Growth < 20% → reject | ✅ Growth ≥ 20% is core; scale score otherwise |
 | **Indentation** | ❌ Code after `if:` at wrong level | ✅ Initialize vars before loop, place post-loop logic outside |
 | **Dead Stock** | ❌ Keep calling API on failed tickers | ✅ Track `fail_count`, set `dead` after 3 consecutive failures |
-| **Cronjob Prompting** | ❌ "請執行 GVW 排名計算" | ✅ "請在終端機執行 `python3 /home/pi/.hermes/gvw_screener/gvw_ranker_cron.py`" |
+| **Cronjob Prompting** | ❌ "請執行 GVW 排名計算" | ✅ "請在終端機執行 `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py`" |
 | **Negative ROE** | ❌ Calculate ROE when NI/Equity < 0 | ✅ Guard: `if net_income > 0 and total_equity > 0:` |
 
 ## 🚀 Deployment
-
-### 1. Run Collector（每日 08:00）
-```bash
-python3 /home/pi/.hermes/gvw_screener/gvw_collector.py
-```
-
-### 2. Run Ranker（每日 08:20，可 background）
-```bash
-# Background mode with notification
-python3 /home/pi/.hermes/gvw_screener/gvw_ranker_cron.py --notify-on-complete=true &
-
-# Or foreground mode
-python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py
-```
-
-### 3. Run Reporter（每日 08:30）
-```bash
-python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py
-```
-
-### Cronjob Setup
-```bash
-crontab -e
-# L1: 0 8 * * * cd /home/pi/.hermes/gvw_screener && python3 gvw_collector.py >> /home/pi/.hermes/gvw_screener/collector.log 2>&1
-# L2: 20 8 * * * python3 gvw_ranker_cron.py --notify-on-complete=true
-# L3: 30 8 * * * python3 gvw_reporter.py >> /home/pi/.hermes/gvw_screener/reporter.log 2>&1
-```
+- **Collector**: `python3 /home/pi/.hermes/gvw_screener/gvw_collector.py` (Every hour via Hermes Cronjob)
+- **Ranker**: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` (Daily 08:20 via Hermes Cronjob)
+- **Reporter**: `python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py` (Daily 08:30 via Hermes Cronjob)
 
 ## 📜 Version History
 
