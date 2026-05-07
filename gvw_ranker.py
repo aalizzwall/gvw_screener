@@ -255,10 +255,10 @@ def main():
     df_results = pd.DataFrame(all_stocks)
     df_results['m_rank'] = df_results['m_val'].rank(pct=True)
     df_results['q_rank'] = df_results['q_val'].rank(pct=True)
-    df_results['t_rank'] = df_results['t_val'] 
+    df_results['t_score'] = df_results['t_val']  # ✅ 統一命名：raw score 不應該叫 _rank
     
     # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
-    df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_rank'] * 0.3) + (df_results['q_rank'] * 0.3)
+    df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_score'] * 0.3) + (df_results['q_rank'] * 0.3)
     # Add global oldest sync timestamp (the minimum updated_at across all stocks)
     if 'sync_date' in df_results.columns and not df_results['sync_date'].isna().all():
         global_oldest_date = str(df_results['sync_date'].min())

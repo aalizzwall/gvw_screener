@@ -1,11 +1,46 @@
-import os, json, pandas as pd
+import os, json, requests, pandas as pd
 from datetime import datetime
 from gvw_signal_detector import get_strong_buy_signals
 
 # ================= CONFIGURATION =================
 RESULT_FILE = '/home/pi/.hermes/gvw_screener/all_rank.json'
 DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
+ENV_FILE = '/home/pi/.hermes/.env'
 
+def load_env_var(var_name):
+    """Load a specific variable from the .env file"""
+    if not os.path.exists(ENV_FILE):
+        return None
+    with open(ENV_FILE, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(f"{var_name}="):
+                return line.split('=', 1)[1].strip()
+    return None
+
+def send_telegram_message(text):
+    """Send text directly to Telegram via Bot API"""
+    token = load_env_var('TELEGRAM_BOT_TOKEN')
+    chat_id = load_env_var('TELEGRAM_HOME_CHANNEL')
+    
+    if not token or not chat_id:
+        print("Error: TELEGRAM_BOT_TOKEN or TELEGRAM_HOME_CHANNEL not found in .env")
+        return False
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Telegram API Error: {e}")
+        return False
 
 def get_suggested_price(ticker):
     """Calculate suggested buy range based on MA20/MA50"""
@@ -87,9 +122,15 @@ def main():
     
     final_report = strong_signals_text + pullback_text + strict_text
     
-    # Only print to stdout for Cronjob deliver: 'origin' to capture
-    print(final_report)
+    # ✅ Direct Push to Telegram for stability
+    if send_telegram_message(final_report):
+        print("Report successfully sent to Telegram via API.")
+    else:
+        print("Failed to send report to Telegram.")
     
+    # Keep print for local logs/debug
+    print("\n--- Report Content ---\n")
+    print(final_report)
 
 if __name__ == "__main__":
     main()

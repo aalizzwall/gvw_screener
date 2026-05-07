@@ -93,7 +93,7 @@ def save_json(path, data):
 
 def fetch_prices(ticker):
     params = {
-        'data_id': ticker,
+        'stock_id': ticker,
         'start_date': (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'),
         'end_date': datetime.now().strftime('%Y-%m-%d')
     }

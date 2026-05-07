@@ -89,7 +89,6 @@ def get_strong_buy_signals():
             })
     
     return signals
-    return signals
 
 if __name__ == "__main__":
     # Test run
