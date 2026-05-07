@@ -4,6 +4,7 @@ from datetime import datetime
 # ================= CONFIGURATION =================
 DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
 RESULT_FILE = '/home/pi/.hermes/gvw_screener/all_rank.json'
+HEALTH_STATUS_FILE = '/home/pi/.hermes/gvw_screener/health_status.json'
 
 def calculate_momentum_score(prices_df, market_df=None):
     """
@@ -173,6 +174,11 @@ def main():
         with open(market_index_file, 'r') as f:
             market_data = json.load(f)
     
+    health_status = {}
+    if os.path.exists(HEALTH_STATUS_FILE):
+        with open(HEALTH_STATUS_FILE, 'r') as f:
+            health_status = json.load(f)
+
     df_market = pd.DataFrame(market_data.get('prices', []))
     if not df_market.empty:
         df_market['close'] = pd.to_numeric(df_market['close'], errors='coerce')
@@ -220,13 +226,11 @@ def main():
                 entry_signal = calculate_entry_signal(df_prices)
                 is_gvw_strict = is_strict_trend and q_val > 0.3
 
-                # Find oldest price date
-                prices_list = data['prices']
-                oldest_data_date = None
-                if prices_list:
-                    dates = [p['date'] for p in prices_list if 'date' in p and isinstance(p['date'], str)]
-                    if dates:
-                        oldest_data_date = min(dates)
+                # Capture sync time ONLY for active stocks to avoid dead-stock noise
+                status_info = health_status.get(ticker, {})
+                is_dead = status_info.get('status') == 'dead'
+                sync_date = data.get('updated_at', '1900-01-01T00:00:00') if not is_dead else None
+
 
                 all_stocks.append({
                     'ticker': ticker,
@@ -236,7 +240,7 @@ def main():
                     'q_val': q_val,
                     'entry_signal': entry_signal,
                     'is_gvw_strict': is_gvw_strict,
-                    'oldest_data_date': oldest_data_date
+                    'sync_date': sync_date
                 })
             
             if idx % 100 == 0 or idx == collected_size:
@@ -255,18 +259,18 @@ def main():
     
     # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
     df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_rank'] * 0.3) + (df_results['q_rank'] * 0.3)
-    # Add global oldest data timestamp (earliest date across all stocks)
-    if 'oldest_data_date' in df_results.columns and not df_results['oldest_data_date'].isna().all():
-        global_oldest_date = str(df_results['oldest_data_date'].min())  # earliest date as string
+    # Add global oldest sync timestamp (the minimum updated_at across all stocks)
+    if 'sync_date' in df_results.columns and not df_results['sync_date'].isna().all():
+        global_oldest_date = str(df_results['sync_date'].min())
     else:
         global_oldest_date = None
     
     full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_rank', 'q_rank']].to_dict('records')
     
-    # Write results with global oldest date as last_update_time
+    # Write results with the global oldest date
     result_output = {
         'data': full_results,
-        'last_update_time': global_oldest_date
+        'earliest_data_date': global_oldest_date
     }
     with open(RESULT_FILE, 'w') as f:
         json.dump(result_output, f)

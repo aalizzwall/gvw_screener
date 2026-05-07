@@ -62,24 +62,23 @@ def check_kline_three_steps(ticker):
 
 def get_strong_buy_signals():
     """
-    Scan top 10 pullback stocks for K-line 3-step verification.
+    Scan all high-score stocks (Score >= 0.95) for K-line 3-step verification.
+    This captures both pullback entries and high-momentum breakouts.
     """
     if not os.path.exists(RESULT_FILE):
         return []
-
+    
     with open(RESULT_FILE, 'r') as f:
-        all_data = json.load(f)
+        result = json.load(f)
     
-    # Filter for pullback zone and sort by final_score
-    pullbacks = [row for row in all_data if row['entry_signal'] == '🟢 回調買入區']
-    pullbacks_sorted = sorted(pullbacks, key=lambda x: x['final_score'], reverse=True)
+    all_data = result.get('data', []) if isinstance(result, dict) else result
     
-    # Check all pullback stocks (increased from Top 10 to comprehensive scan)
-    all_pullbacks = pullbacks_sorted
+    # Filter for high-score candidates currently in the pullback buy zone
+    candidates = [row for row in all_data if row['final_score'] >= 0.95 and row['entry_signal'] == '🟢 回調買入區']
+    candidates_sorted = sorted(candidates, key=lambda x: x['final_score'], reverse=True)
     
     signals = []
-
-    for row in all_pullbacks:
+    for row in candidates_sorted:
         ticker = row['ticker']
         res = check_kline_three_steps(ticker)
         if res and res['all_passed']:
@@ -89,6 +88,7 @@ def get_strong_buy_signals():
                 'score': row['final_score']
             })
     
+    return signals
     return signals
 
 if __name__ == "__main__":
