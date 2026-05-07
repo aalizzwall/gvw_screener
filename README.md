@@ -6,20 +6,22 @@
 gvw_screener/
 ├── gvw_collector.py        # 資料採集（Tier 1-3 TTL）→ 每小時執行 (Hermes Cronjob)
 ├── gvw_ranker.py           # 排名計算 + 最舊資料追蹤 → 08:20 (Hermes Cronjob)  
-├── gvw_reporter.py         # 報告生成 + K 線訊號檢測 → 08:30 (Hermes Cronjob)
-├── gvw_signal_detector.py  # K 線三步檢查支援檔案（選配）
-├── all_rank.json           # 排名結果輸出（包含 last_update_time）
+├── gvw_reporter.py         # 報告生成 + 直接 API 推送 → 08:30 (Hermes Cronjob, Local Deliver)
+├── gvw_intraday_monitor.py # 即時 K 線突破監控 → 09:00-14:00 (:20/:50) (Hermes Cronjob, Local Deliver)
+├── gvw_signal_detector.py  # K 線三步檢查支援邏輯
+├── all_rank.json           # 排名結果輸出（包含 earliest_data_date）
 ├── health_status.json      # 健康狀態追蹤（dead-stock 隔離）
 └── pointer.json            # Universe cache（4-digit only）
 ```
 
 ## ⏰ Cronjob 時間表
 
-| 任務 | 程式檔 | cron expression | 說明 |
-|------|--------|-----------------|------|
-| 資料採集 | `gvw_collector.py` | `0 * * * *` (每小時) | Tier 1→2→3 TTL，最舊資料優先更新 |
-| 排名計算 | `gvw_ranker.py` | `20 8 * * *` (每日 08:20) | 計算排名 + 紀錄全局最舊時間 |
-| 報告生成 | `gvw_reporter.py` | `30 8 * * *` (每日 08:30) | 三欄位報告 + K 線訊號檢查 |
+| 任務 | 程式檔 | cron expression | 說明 | 推送方式 |
+|------|--------|-----------------|------|-----------|
+| 資料採集 | `gvw_collector.py` | `0 * * * *` (每小時) | Tier 1→2→3 TTL，最舊資料優先更新 | Local |
+| 排名計算 | `gvw_ranker.py` | `20 8 * * *` (每日 08:20) | 計算排名 + 紀錄全局最舊時間 | Origin |
+| 報告生成 | `gvw_reporter.py` | `30 8 * * *` (每日 08:30) | 三欄位報告 $\rightarrow$ **直接 API 推送** | Local |
+| 即時監控 | `gvw_intraday_monitor.py` | `20,50 9-14 * * *` | K 線三步突破 $\rightarrow$ **即時 API 警報** | Local |
 
 ## 🎯 GVW 策略邏輯（GVW Standard）
 
@@ -67,7 +69,7 @@ final_score = (momentum_rank × 40%) + \
 
 ## 📊 K 線三步檢查（GVW Signal Detector）
 
-在 `gvw_reporter.py` L79-86 或獨立運行的 `gvw_signal_detector.py`：
+由 `gvw_signal_detector.py` 提供邏輯，並由 `gvw_reporter.py` 及 `gvw_intraday_monitor.py` 調用：
 
 ```
 1️⃣ 量能萎縮 (Volume Dry-up):
@@ -81,17 +83,17 @@ final_score = (momentum_rank × 40%) + \
    - 當前成交量 > 1.5 × 20 日平均成交量
 ```
 
-**流程：**
-1. `gvw_reporter.py` 讀取 `all_rank.json` 中所有「回調買入區」股票
-2. 對每一支回調股，檢查 K 線三步是否完成
-3. 返回符合條件的股票列表（可單獨發送訊號）
+**即時監控流程：**
+1. 篩選 `all_rank.json` 中 `final_score >= 0.95` 且處於「回調買入區」之標的。
+2. 執行 K 線三步檢查。
+3. 若通過且為 24 小時內首次觸發 $\rightarrow$ **直接調用 Telegram API 發送即時警報**。
 
 ## 📁 Output Structure
 
 ### all_rank.json（排名結果）
 ```json
 {
-  "last_update_time": "2024-03-15T09:30:00",  // ⚠️ 全局最舊時間
+  "earliest_data_date": "2024-03-15T09:30:00",  // ⚠️ 全局同步健康指標 (排除 dead-stock)
   "data": [
     {
       "ticker": "6543",
@@ -100,20 +102,12 @@ final_score = (momentum_rank × 40%) + \
       "momentum_rank": 0.85,
       "trend_score": 0.92,
       "quality_rank": 0.31,
-      "status": "gvw_strict",  // 或 "pullback_buy_zone"
-      "entry_price_range": {"low": 45.2, "high": 47.8},
-      "oldest_data_date": "2024-03-15T09:30:00"
+      "entry_signal": "🟢 回調買入區",
+      "is_gvw_strict": true
     }
   ]
 }
 ```
-
-### 報告格式（Telegram）
-
-**🔥 Top 3 綜合強勢** - 市場領導者  
-**🎯 Top 3 回調買入** - 立即可動作機會  
-**💎 GVW Strict 名單** - 完整嚴格對齊股票（無分數截斷）  
-**⏰ Last Update Time** - 資料最新採集時間點
 
 ## ⚠️ Pitfalls & Lessons Learned
 
@@ -124,18 +118,20 @@ final_score = (momentum_rank × 40%) + \
 | **Indentation** | ❌ Code after `if:` at wrong level | ✅ Initialize vars before loop, place post-loop logic outside |
 | **Dead Stock** | ❌ Keep calling API on failed tickers | ✅ Track `fail_count`, set `dead` after 3 consecutive failures |
 | **Cronjob Prompting** | ❌ "請執行 GVW 排名計算" | ✅ "請在終端機執行 `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py`" |
-| **Negative ROE** | ❌ Calculate ROE when NI/Equity < 0 | ✅ Guard: `if net_income > 0 and total_equity > 0:` |
+| **Delivery** | ❌ Use Gateway for high-freq alerts | ✅ Use Direct API calls for instant alerts to avoid noise |
 
 ## 🚀 Deployment
-- **Collector**: `python3 /home/pi/.hermes/gvw_screener/gvw_collector.py` (Every hour via Hermes Cronjob)
-- **Ranker**: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` (Daily 08:20 via Hermes Cronjob)
-- **Reporter**: `python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py` (Daily 08:30 via Hermes Cronjob)
+- **Collector**: `python3 /home/pi/.hermes/gvw_screener/gvw_collector.py` (Every hour)
+- **Ranker**: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` (Daily 08:20)
+- **Reporter**: `python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py` (Daily 08:30)
+- **Intraday**: `python3 /home/pi/.hermes/gvw_screener/gvw_intraday_monitor.py` (09:00-14:00)
 
 ## 📜 Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | v1.0 | May 6, 2026 | Initial commit with core files + tiered TTL strategy |
+| v1.1 | May 7, 2026 | Implement Direct API Push for Reporter & Intraday Monitor; Decouple Logic/Delivery |
 
 ## 🔗 Related Resources
 
