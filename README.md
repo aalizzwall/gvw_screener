@@ -1,33 +1,57 @@
 # GVW Screener System (Garrett Van Wagoner Strategy)
 
-## 📋 系統架構總覽
+## 📌 Core Specification (Main Specification Document)
+
+**📘 [`GVW-CORE-SPEC.md`](GVW-CORE-SPEC.md)** is the **central hub** for the GVW ecosystem. It defines:
+- Layer 1 (Core Spec): Strategy pillars, health metrics, and implementation guardrails
+- Layer 2-5 Architecture Map: References to Python scripts in `/home/pi/.hermes/gvw_screener/`
+- External Tools: Cross-references to [`financial-market-screening`](https://hermes-agent.nousresearch.com/skills/financial-market-screening) and [`finmind-api-integration`](https://hermes-agent.nousresearch.com/skills/finmind-api-integration)
+
+> **Usage Tip**: For AI agents or team members, load `gvw-core-spec` skill first to understand the system architecture. It references all Python implementations without duplicating them.
+
+---
+
+## 📋 System Architecture Overview
 
 ```
-gvw_screener/
-├── gvw_collector.py        # 資料採集（Tier 1-3 TTL）→ 每小時執行 (Hermes Cronjob)
-├── gvw_ranker.py           # 排名計算 + 最舊資料追蹤 → 08:20 (Hermes Cronjob)  
-├── gvw_reporter.py         # 報告生成 + 直接 API 推送 → 08:30 (Hermes Cronjob, Local Deliver)
-├── gvw_intraday_monitor.py # 即時 K 線突破監控 → 09:00-14:00 (:20/:50) (Hermes Cronjob, Local Deliver)
-├── gvw_signal_detector.py  # K 線三步檢查支援邏輯
-├── all_rank.json           # 排名結果輸出（包含 earliest_data_date）
-├── health_status.json      # 健康狀態追蹤（dead-stock 隔離）
-└── pointer.json            # Universe cache（4-digit only）
+┌─────────────────────────────────────────────────────────────────────┐
+│                    gvw_screener/ Project Structure                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  📘 GVW-CORE-SPEC.md        # Layer 1: Core Spec (Strategy + Guardrails)         │
+│     └─ References all Python scripts and external tools             │
+│                                                                      │
+│  ├── gvw_ranker.py         # Layer 2: Strategy Implementation        │
+│  │      (RS / Stage 2 / Quality Scoring, Entry Signals)             │
+│                                                                      │
+│  ├── gvw_collector.py      # Layer 3: Data Infrastructure            │
+│  │      (Tiered TTL, Dead-stock Isolation, API Wrapper)             │
+│  │      ↗ References finmind-api-integration skill                   │
+│                                                                      │
+│  ├── gvw_reporter.py       # Layer 5: Reporting & Analysis           │
+│  └── gvw_intraday_monitor.py # Layer 4: Operations & Automation      │
+│             (Real-time K-line alerts, Signal deduplication)         │
+│                                                                      │
+│  └── gvw_signal_detector.py # Shared utility for K-line verification│
+│                              (Used by Reporter & Intraday Monitor)   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## ⏰ Cronjob 時間表
+## ⏰ Cronjob Schedule
 
-| 任務 | 程式檔 | cron expression | 說明 | 推送方式 |
-|------|--------|-----------------|------|-----------|
-| 資料採集 | `gvw_collector.py` | `0 * * * *` (每小時) | Tier 1→2→3 TTL，最舊資料優先更新 | Local |
-| 排名計算 | `gvw_ranker.py` | `20 8 * * *` (每日 08:20) | 計算排名 + 紀錄全局最舊時間 | Origin |
-| 報告生成 | `gvw_reporter.py` | `30 8 * * *` (每日 08:30) | 三欄位報告 $\rightarrow$ **直接 API 推送** | Local |
-| 即時監控 | `gvw_intraday_monitor.py` | `20,50 9-14 * * *` | K 線三步突破 $\rightarrow$ **即時 API 警報** | Local |
+| Task | Python Script | Cron Expression | Purpose | Delivery Mode |
+|------|---------------|-----------------|---------|---------------|
+| Data Collection | `gvw_collector.py` | `0 * * * *` (Every hour) | Tier 1→2→3 TTL refresh, dead-stock isolation | `local` |
+| Ranking | `gvw_ranker.py` | `20 8 * * *` (Daily 08:20) | Calculate scores + track `earliest_data_date` | `origin` |
+| Daily Report | `gvw_reporter.py` | `30 8 * * *` (Daily 08:30) | Generate report + Direct API push | `local` |
+| Intraday Monitor | `gvw_intraday_monitor.py` | `20,50 9-14 * * *` | Real-time K-line breakout alerts | `local` |
 
-## 🎯 GVW 策略邏輯（GVW Standard）
+## 🎯 GVW Strategy Logic (GVW Standard)
 
 ### 1️⃣ Trend Analysis (Stage 2 Detection)
 ```python
-# 絕對門檻：必須在 SMA200 之上
+# Absolute threshold: Must be above SMA200
 is_stage_2 = (price > sma200) AND \
              (price > sma150 > sma200) AND \
              (sma200_slope_positive) AND \
@@ -37,24 +61,24 @@ is_stage_2 = (price > sma200) AND \
 
 ### 2️⃣ Growth & Quality (Hyper-Growth)
 ```python
-# ROE 效能評分（非硬過濾）
+# ROE performance scoring (not hard filtering)
 roe_score = min(1.0, roe / 0.15)  # ROE >= 15% → full points
 
-# 成長率 ≥ 20% 是核心標準
+# Growth ≥ 20% is core standard
 growth_multiplier = max(0.3, 0.5 + 0.2 * growth/20)
 
-# 綜合分數
+# Composite score
 quality_score = roe_score × growth_multiplier
 ```
 
 ### 3️⃣ Entry Timing (Pullback Buy Zone)
 ```python
-# 🟢 回調買入區：靠近 MA20/MA50 支撐（±3-8%）
+# 🟢 Pullback Buy Zone: Near MA20/MA50 support (±3-8%)
 buy_zone_price = price_within(3%, 8%, MA20_or_MA50)
 
 # Avoidance Zones:
-# - 🔴 overextended: price > MA + 8% (wait for pullback)
-# - 🟡 weak_trend: price < critical MAs
+# - 🔴 Overextended: price > MA + 8% (wait for pullback)
+# - 🟡 Weak trend: price < critical MAs
 ```
 
 ## 🔧 Quantitative Ranking Formula
@@ -65,35 +89,35 @@ final_score = (momentum_rank × 40%) + \
               (quality_rank × 30%)
 ```
 
-**⚠️ 重要：momentum rank 需要重新計算（因為價格變動），但 trend/quality 可以 reuse。**
+**⚠️ Important**: `momentum_rank` must be recalculated (price-dependent), while `trend` and `quality` can be reused across rankings.
 
-## 📊 K 線三步檢查（GVW Signal Detector）
+## 📊 K-line Three-Step Verification
 
-由 `gvw_signal_detector.py` 提供邏輯，並由 `gvw_reporter.py` 及 `gvw_intraday_monitor.py` 調用：
+Implemented in `gvw_signal_detector.py`, called by `gvw_reporter.py` and `gvw_intraday_monitor.py`:
 
 ```
-1️⃣ 量能萎縮 (Volume Dry-up):
-   - 最近 5 日平均成交量 ≤ 70% × 20 日平均成交量
+1️⃣ Volume Dry-up (量能萎縮):
+   - Last 5 days avg volume ≤ 70% × 20 days avg volume
    
-2️⃣ 支撐企穩 (Bottoming Out):
-   - 最後 3 日的價格區間 ≤ 當前價的 3%
+2️⃣ Bottoming Out (支撐企穩):
+   - Price range of last 3 days ≤ 3% of current price
    
-3️⃣ 帶量突破 (Breakout):
-   - 當前收盤價 > 過去 5 日（不含當日）最高價 ✅
-   - 當前成交量 > 1.5 × 20 日平均成交量
+3️⃣ Breakout (帶量突破):
+   - Current close > max of previous 5 days (excluding today) ✅
+   - Current volume > 1.5 × 20 days avg volume
 ```
 
-**即時監控流程：**
-1. 篩選 `all_rank.json` 中 `final_score >= 0.95` 且處於「回調買入區」之標的。
-2. 執行 K 線三步檢查。
-3. 若通過且為 24 小時內首次觸發 $\rightarrow$ **直接調用 Telegram API 發送即時警報**。
+**Intraday Monitoring Flow:**
+1. Filter `all_rank.json` for `final_score >= 0.95` AND `'🟢 Pullback Buy Zone'` entries
+2. Execute K-line three-step verification
+3. If passed and triggered within 24h window → **Direct Telegram API alert**
 
 ## 📁 Output Structure
 
-### all_rank.json（排名結果）
+### all_rank.json (Ranking Results)
 ```json
 {
-  "earliest_data_date": "2024-03-15T09:30:00",  // ⚠️ 全局同步健康指標 (排除 dead-stock)
+  "earliest_data_date": "2024-03-15T09:30:00",  // ⚠️ Sync health indicator (excludes dead-stock)
   "data": [
     {
       "ticker": "6543",
@@ -102,7 +126,7 @@ final_score = (momentum_rank × 40%) + \
       "momentum_rank": 0.85,
       "trend_score": 0.92,
       "quality_rank": 0.31,
-      "entry_signal": "🟢 回調買入區",
+      "entry_signal": "🟢 Pullback Buy Zone",
       "is_gvw_strict": true
     }
   ]
@@ -111,34 +135,47 @@ final_score = (momentum_rank × 40%) + \
 
 ## ⚠️ Pitfalls & Lessons Learned
 
-| 問題類型 | Anti-Pattern | Best Practice |
-|---------|--------------|---------------|
-| **ROE 陷阱** | ❌ ROE < 10% → exclude | ✅ Use scoring: `roe_score = min(1.0, roe/0.15)` |
-| **成長過濾** | ❌ Growth < 20% → reject | ✅ Growth ≥ 20% is core; scale score otherwise |
+| Issue Type | Anti-Pattern | Best Practice |
+|------------|--------------|---------------|
+| **ROE Trap** | ❌ ROE < 10% → exclude | ✅ Use scoring: `roe_score = min(1.0, roe/0.15)` |
+| **Growth Filtering** | ❌ Growth < 20% → reject | ✅ Growth ≥ 20% is core; scale score otherwise |
 | **Indentation** | ❌ Code after `if:` at wrong level | ✅ Initialize vars before loop, place post-loop logic outside |
 | **Dead Stock** | ❌ Keep calling API on failed tickers | ✅ Track `fail_count`, set `dead` after 3 consecutive failures |
-| **Cronjob Prompting** | ❌ "請執行 GVW 排名計算" | ✅ "請在終端機執行 `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py`" |
+| **Cronjob Prompting** | ❌ "Please run GVW ranking calculation" | ✅ Use exact command: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` |
 | **Delivery** | ❌ Use Gateway for high-freq alerts | ✅ Use Direct API calls for instant alerts to avoid noise |
 
-## 🚀 Deployment
-- **Collector**: `python3 /home/pi/.hermes/gvw_screener/gvw_collector.py` (Every hour)
-- **Ranker**: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` (Daily 08:20)
-- **Reporter**: `python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py` (Daily 08:30)
-- **Intraday**: `python3 /home/pi/.hermes/gvw_screener/gvw_intraday_monitor.py` (09:00-14:00)
+## 🚀 Deployment Commands
+
+- **Data Collection**: `python3 /home/pi/.hermes/gvw_screener/gvw_collector.py` (Every hour)
+- **Ranking**: `python3 /home/pi/.hermes/gvw_screener/gvw_ranker.py` (Daily 08:20)
+- **Daily Report**: `python3 /home/pi/.hermes/gvw_screener/gvw_reporter.py` (Daily 08:30)
+- **Intraday Monitoring**: `python3 /home/pi/.hermes/gvw_screener/gvw_intraday_monitor.py` (09:00-14:00)
+
+## 📚 Skills Reference
+
+| Skill | Category | Usage |
+|-------|----------|-------|
+| [`gvw-core-spec`](https://hermes-agent.nousresearch.com/skills/gvw-core-spec) | devops (GVW) | **Main hub for AI agents** - Load first to understand architecture |
+| [`financial-market-screening`](https://hermes-agent.nousresearch.com/skills/financial-market-screening) | devops | General market screening patterns (Tiered TTL, Health Isolation) |
+| [`finmind-api-integration`](https://hermes-agent.nousresearch.com/skills/finmind-api-integration) | devops | FinMind v4 API wrapper and dataset mapping |
+
+> **AI Usage Pattern**: Load `gvw-core-spec` → AI will reference Python scripts in `/home/pi/.hermes/gvw_screener/` without duplication. No need to load additional fragmented skills.
 
 ## 📜 Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | v1.0 | May 6, 2026 | Initial commit with core files + tiered TTL strategy |
-| v1.1 | May 7, 2026 | Implement Direct API Push for Reporter & Intraday Monitor; Decouple Logic/Delivery |
+| v1.1 | May 7, 2026 | Direct API Push for Reporter & Intraday Monitor; Decouple Logic/Delivery |
+| v1.2 | May 7, 2026 | Re-architect `gvw-core-spec` into layered structure (Layer 1 references Layers 2-5); Clean up fragmented skills |
 
 ## 🔗 Related Resources
 
-- [GVW Stock Screening Skill](https://hermes-agent.nousresearch.com/docs) - For using `gvw-stock-screener-core` skill
-- [Mark Minervini's Book: Trade Like Buffett](https://www.markminervini.com/books/) - Original GVW strategy source
+- **Mark Minervini's Trade Like Buffett** - [Original GVW Strategy Source](https://www.markminervini.com/books/)
+- **FinMind v4 Dataset Map** - See [`finmind-api-integration`](https://hermes-agent.nousresearch.com/skills/finmind-api-integration#dataset-mapping)
 
 ---
 
 **Author**: Pascal Wang  
 **Last Updated**: 2026-05-07  
+**Repository**: `github.com/aalizzwall/gvw_screener`
