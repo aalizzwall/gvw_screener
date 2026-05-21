@@ -261,11 +261,16 @@ def main():
     df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_score'] * 0.3) + (df_results['q_rank'] * 0.3)
     # Add global oldest sync timestamp (the minimum updated_at across all stocks)
     if 'sync_date' in df_results.columns and not df_results['sync_date'].isna().all():
-        global_oldest_date = str(df_results['sync_date'].min())
+        # Convert non-None values to strings and find the minimum date
+        valid_dates = df_results['sync_date'].dropna()
+        if len(valid_dates) > 0:
+            global_oldest_date = str(min(str(x) for x in valid_dates if pd.notna(x)))
+        else:
+            global_oldest_date = None
     else:
         global_oldest_date = None
     
-    full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_rank', 'q_rank']].to_dict('records')
+    full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_score', 'q_rank']].to_dict('records')
     
     # Write results with the global oldest date
     result_output = {
