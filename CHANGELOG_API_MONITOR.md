@@ -53,14 +53,39 @@ def check_kline_three_steps_api(ticker):
 ```
 
 ### 新增功能清單
+|| 功能 | 狀態 | 說明 |
+||------|------|------|
+|| API 即時數據抓取 | ✅ | `TAIWAN_HIS_KL` 資料集 |
+|| K 線三步法驗證 | ✅ | 與原有邏輯保持一致 |
+|| Telegram 警報發送 | ✅ | 透過 Hermes Gateway |
+|| 配額控制機制 | ✅ | Phase 3 Limit (60/小時) |
 
-| 功能 | 狀態 | 說明 |
-|------|------|------|
-| API 即時數據抓取 | ✅ | `TAIWAN_HIS_KL` 資料集 |
-| K 線三步法驗證 | ✅ | 與原有邏輯保持一致 |
-| Telegram 警報發送 | ✅ | 透過 Hermes Gateway |
-| 配額控制機制 | ✅ | Phase 3 Limit (60/小時) |
+**核心邏輯**: 只首次偵測到訊號時才會發送 Telegram 警報
+#### 信號快取機制
 
+```python
+# Line 266: 載入上次通知的訊號記錄
+last_signals = load_json_safe(SIGNAL_CACHE_FILE, {})
+
+# Line 305-312: 靜音模式判斷邏輯
+if res['all_passed']:
+    current_signals[ticker] = datetime.now().isoformat()
+    
+    last_alerted = last_signals.get(ticker)
+    if not last_alerted:
+        print(f"\n🔥 SIGNAL FOUND! {name} ({ticker}) | Score: {score:.2f}")
+        if send_telegram_alert(ticker, name, score):  # 只首次通知
+            new_signals_found += 1
+        success_count += 1
+    else:
+        print(f"  ℹ️ Still active signal (already alerted)")  # 已通知過，不重複發送
+```
+#### 運作模式
+
+- **初次偵測**: ✅ 發送警報 → 記錄到 `last_signals.json`
+- **持續驗證中**: ⏸️ 僅更新內碼狀態 → 不重複發送
+- **訊號失效時**: ℹ️ 移除快取記錄 → 下次重新觸發新警報
+---
 ---
 
 ## 📊 API 負載評估報告
@@ -197,7 +222,7 @@ python gvw_intraday_monitor.py
 - 問題：過時資料導致假陽性
 ```
 
-### v1.2.0 (API 驅動模式 - Current)
+### v1.2.0 (API 驅動模式 + 靜音設計 - Current)
 
 ```python
 - 讀取：FinMind API (TAIWAN_HIS_KL)
@@ -206,6 +231,37 @@ python gvw_intraday_monitor.py
 ```
 
 ---
+
+## 🔇 重要設計特點
+
+### 靜音模式 (Silent Mode)
+
+**目的**: 避免 Telegram 訊息轟炸，只在新訊號出現時通知。
+
+#### 運作流程
+
+| 階段 | 狀態 | 動作 | 輸出 |
+|------|------|------|------|
+| **初次發現** | last_signals[ticker] = None | ✅ 發送警報 | 🔥 SIGNAL FOUND! |
+| **持續驗證中** | last_signals[ticker] = "2026-05-21T09:45" | ⏸️ 更新狀態 | ℹ️ Still active signal (already alerted) |
+| **訊號失效時** | ticker 移除出 last_signals.json | 🔄 下次重新偵測 | 🔥 SIGNAL FOUND! (新警報) |
+
+#### 實際輸出範例
+
+```bash
+$ python gvw_intraday_monitor.py
+
+# Ticker=8021, 初次發現
+# 🔥 SIGNAL FOUND! XXXX (8021) | Score: 0.97
+# ✅ [ALERT] Alert sent to Telegram successfully
+
+# Ticker=8021, 5 分鐘後再次掃描（訊號仍有效）
+# ℹ️ Still active signal (already alerted)
+
+# 30 分鐘後，該標的驗證失敗（價格回測）
+# 🔥 SIGNAL FOUND! XXXX (8021) | Score: 0.97
+# ✅ [ALERT] 新警報觸發！
+```---
 
 ## 📝 備忘錄 (Notes)
 
