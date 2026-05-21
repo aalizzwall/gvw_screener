@@ -308,12 +308,25 @@ def main():
     expired_batch.sort(key=lambda x: x['age_hours'])
     
     # Process each stock individually with proper TTL-based filtering (FIXED!)
+    # CRITICAL FIX: Limit API calls to avoid rate limiting (max 60/hour for production)
+    max_calls_per_hour = 60
+    processed_count = 0
+    
     for ticker_info in expired_batch:
+        if processed_count >= max_calls_per_hour:
+            print(f"\n⏸️  Rate limit protection triggered. Pausing API calls until next hour.")
+            break
+        
         ticker = ticker_info['ticker']
         print(f"  Updating {ticker} [Score: {ticker_info['score']:.2f}, TTL: {ticker_info['ttl_hours']}h, Age: {ticker_info['age_hours']:.1f}h]...", end=' ')
         
         update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
         print()
+        processed_count += 1
+        
+        # Rate limit pacing: wait 6 seconds between calls (60 / 10 = 6 sec)
+        if processed_count % 5 == 0:
+            time.sleep(6)
 
     save_json(HEALTH_STATUS_FILE, health_status)
     print(f"\n✅ Cycle complete. Rate limit protection active.")
