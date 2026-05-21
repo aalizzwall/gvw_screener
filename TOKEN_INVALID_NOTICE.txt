@@ -1,0 +1,22 @@
+
+--- 🔔 FINMIND TOKEN INVALID --- 
+
+Current Status:
+✅ Token length: 172 chars (correct)  
+✅ Code fixed at line 31
+❌ API returns 400 error: "Token illegal or parameter error"
+
+Root Cause: 
+The current FinMind token in /home/pi/.hermes/.env has expired OR is invalid.
+
+To Resolve:
+1. Visit https://financial.stanford.edu (or FinMind's official portal)
+2. Register/Login to get a new authentication token
+3. The new token should be exactly 172 characters
+4. Update /home/pi/.hermes/.env with the new token:
+   FINMIND_TOKEN=<paste_new_172_char_token_here>
+
+Alternatively, check if FinMind offers a trial/generate API key via their dashboard.
+
+--- 
+This is NOT a code bug - the FinMind service requires valid authentication credentials.
