@@ -1,14 +1,33 @@
 # GVW Screener Release Notes
 
-## Version 2026.05.08 (Current Branch)
+## Version 2026.05.09 (Current Branch)
+
+### 🔥 CRITICAL FIX: API Rate Limit Protection
+
+**Issue**: FinMind API returns `402 Rate Limit` when calling >600 times/hour.
+
+**Root Cause Analysis**:
+- Phase 3 processed **unlimited** expired stocks
+- Combined with Phase 2's 50 missing stocks repair = 100+ calls/hour
+- Consistently hitting FinMind's 600 calls/hour hard limit
+
+**Solution Implemented**:
+✅ Limit Phase 3 to max 60 calls/hour  
+✅ Add rate pacing: 6s delay every 5 calls  
+✅ Early exit with graceful message when limit reached  
+✅ Next hour resumes from beginning of expired list
 
 ### 📦 What Changed
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| Core Ranking (`gvw_ranker.py`) | ✅ Fixed | Global oldest sync timestamp calculation now properly excludes dead stocks |
-| Data Collection (`gvw_collector.py`) | ✅ Fixed | Enhanced health monitoring, dead-stock TTL reset logic |
-| Documentation | ✅ Updated | Added comprehensive CHANGELOG.md |
+| `gvw_collector.py` | ✏️ **CRITICAL** | Added rate limiting to Phase 3 (max 60/hour + pacing) |
+| `CHANGELOG.md` | ✏️ Updated | Added v2026.05.09 release notes |
+| `RELEASE_NOTES.md` | ✏️ Updated | Updated with new rate limit protection info |
+
+---
+
+## Version 2026.05.08 (Previous Release)
 
 ---
 
