@@ -253,31 +253,70 @@ def main():
     for ticker in repair_list[:50]:
         update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
 
-    # --- TIER 3: Regular Scan (Process ALL expired stocks) ---
-    print("\n--- Phase 3: Process Expired Stocks ---")
+    # --- TIER 3: Score-Based Regular Scan (FIXED: Use individual TTL per score tier) ---
+    print("\n--- Phase 3: Process Expired Stocks (Score-Based TTL) ---")
 
-    # Gather all existing stocks and their last update times
+    # Gather all existing stocks with their scores and determine appropriate TTL
     stock_ages = []
     for ticker in universe_list:
         file_path = os.path.join(DATA_DIR, f"{ticker}.json")
         if os.path.exists(file_path):
             data = load_json_safe(file_path, {})
             updated_at = data.get('updated_at', '1900-01-01T00:00:00')
-            # 計算相對年齡 (小時)
+            
+            # Get score from ranking (default 0 for dead/unknown stocks)
+            stock_score = rank_map.get(ticker, 0)
+            health_info = health_status.get(ticker, {})
+            
+            # Skip dead stocks unless re-check time has passed
+            if health_info.get('status') == 'dead':
+                last_attempt = health_info.get('last_attempt_at', '1900-01-01T00:00:00')
+                days_since_recheck = (datetime.now() - datetime.fromisoformat(last_attempt)).days
+                if days_since_recheck < RECHECK_INTERVAL:
+                    continue
+            
+            # Calculate relative age in hours
             current_age_hours = (datetime.now() - datetime.fromisoformat(updated_at)).total_seconds() / 3600
-            stock_ages.append((ticker, updated_at, current_age_hours))
+            
+            # CRITICAL FIX: Determine appropriate TTL based on score tier
+            ttl_hours = TTL_HIGH_SCORE if stock_score > 0.9 else (TTL_MID_SCORE if stock_score > 0.6 else TTL_LOW_SCORE)
+            
+            stock_ages.append({
+                'ticker': ticker,
+                'updated_at': updated_at,
+                'age_hours': current_age_hours,
+                'score': stock_score,
+                'ttl_hours': ttl_hours
+            })
 
-    # Sort by updated_at ascending (oldest first)
-    stock_ages.sort(key=lambda x: x[2])
-
-    # Process ALL expired stocks (not just 50 oldest), with rate limiting
-    batch = [t for t, _, age in stock_ages if age > TTL_HIGH_SCORE]  # 只處理真的過期的標的
+    # Filter stocks that have EXCEEDED their individual TTL thresholds (FIXED!)
+    expired_batch = [s for s in stock_ages if s['age_hours'] > s['ttl_hours']]
     
-    for ticker in batch:
+    print(f"  Total active stocks checked: {len(stock_ages)}")
+    print(f"  Found {len(expired_batch)} stocks exceeding their TTL thresholds")
+    
+    # Group by score tiers for transparency
+    high_score_count = len([s for s in expired_batch if s['score'] > 0.9])
+    mid_score_count = len([s for s in expired_batch if 0.6 <= s['score'] <= 0.9])
+    low_score_count = len([s for s in expired_batch if s['score'] < 0.6])
+    
+    print(f"    - High Score (>0.9): {high_score_count} stocks (TTL: {TTL_HIGH_SCORE}h)")
+    print(f"    - Mid Score (0.6-0.9): {mid_score_count} stocks (TTL: {TTL_MID_SCORE}h)")
+    print(f"    - Low Score (<0.6): {low_score_count} stocks (TTL: {TTL_LOW_SCORE}h)")
+
+    # Sort by age (oldest first) to process critical data first
+    expired_batch.sort(key=lambda x: x['age_hours'])
+    
+    # Process each stock individually with proper TTL-based filtering (FIXED!)
+    for ticker_info in expired_batch:
+        ticker = ticker_info['ticker']
+        print(f"  Updating {ticker} [Score: {ticker_info['score']:.2f}, TTL: {ticker_info['ttl_hours']}h, Age: {ticker_info['age_hours']:.1f}h]...", end=' ')
+        
         update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
+        print()
 
     save_json(HEALTH_STATUS_FILE, health_status)
-    print(f"\nCycle complete. Updated top {len(batch)} oldest stocks.")
+    print(f"\n✅ Cycle complete. Rate limit protection active.")
 
 if __name__ == "__main__":
     main()
