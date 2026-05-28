@@ -15,9 +15,8 @@ TTL_HIGH_SCORE = 4    # Score > 0.9
 TTL_MID_SCORE = 24    # Score > 0.6
 TTL_LOW_SCORE = 168   # Others (7 days)
 TTL_FINANCIALS = 720  # Financials update every 30 days
-RECHECK_INTERVAL = 180 # Dead stocks re-check every 180 days
 
-# Load FINMIND token from environment variable (optional, API may work without auth)
+# Load FINMIND token from environment variable
 FINMIND_TOKEN = os.getenv('FINMIND_TOKEN', '').strip()
 
 print(f"✅ FINMIND_TOKEN loaded: {len(FINMIND_TOKEN) if FINMIND_TOKEN else 0} chars")
@@ -25,16 +24,10 @@ print(f"✅ FINMIND_TOKEN loaded: {len(FINMIND_TOKEN) if FINMIND_TOKEN else 0} c
 def get_finmind_data(dataset, params=None):
     """Standard FinMind v4 API wrapper with retry logic and rate limiting"""
     url = "https://api.finmindtrade.com/api/v4/data"
-    
-    # Prepare base query parameters
     query_params = {'dataset': dataset}
-    
-    # Add optional parameters if provided in params dict
     if params:
         for key, value in params.items():
             query_params[key] = value
-    
-    # Add default date range if not provided
     if 'start_date' not in query_params:
         query_params['start_date'] = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
     if 'end_date' not in query_params:
@@ -43,53 +36,40 @@ def get_finmind_data(dataset, params=None):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Prepare request headers - use Bearer token only if available and non-empty
             headers = {}
             if FINMIND_TOKEN and len(FINMIND_TOKEN) >= 170:
                 headers['Authorization'] = f'Bearer {FINMIND_TOKEN}'
             
-            print(f"[DEBUG] Attempting request for dataset={dataset}, params={query_params}, auth={bool(headers)}")
             response = requests.get(url, params=query_params, headers=headers, timeout=15)
-            print(f"[DEBUG] Response status: {response.status_code}")
             if response.status_code == 402:
                 print(f"\n❌ Rate limit exceeded (402). Stopping to avoid ban.")
                 sys.exit(1)
             if response.status_code == 400 and 'msg' in response.json() and 'Token is illegal' in response.json().get('msg', ''):
-                print(f"\n❌ Token illegal error (400). Skipping this attempt.")
                 continue
             
             response.raise_for_status()
             res_json = response.json()
             return res_json['data'] if isinstance(res_json, dict) and 'data' in res_json else res_json
-
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response else 0
             if 500 <= status_code < 600:
-                wait_time = (2 ** attempt) + random.random()
-                time.sleep(wait_time)
+                time.sleep((2 ** attempt) + random.random())
             else:
                 return None
-        except Exception as e:
-            print(f"[DEBUG] Request failed with error: {e}")
+        except Exception:
             return None
     return None
 
 def get_universe():
-    """Get Taiwan stocks list, excluding ETFs and problematic prefixes (00, 02)"""
     if os.path.exists(UNIVERSE_FILE):
-        with open(UNIVERSE_FILE, 'r') as f:
-            return json.load(f)
-
-    print("Fetching universe from FinMind...")
+        with open(UNIVERSE_FILE, 'r') as f: return json.load(f)
     data = get_finmind_data('TaiwanStockInfo')
     if data and isinstance(data, list):
-        # FILTER: Must be exactly 4 digits, numeric only, and not start with 00 or 02
         universe = {item['stock_id']: item.get('stock_name', 'Unknown')
                     for item in data if item['stock_id'].isdigit()
                     and len(item['stock_id']) == 4
                     and not item['stock_id'].startswith(('00', '02'))}
-        with open(UNIVERSE_FILE, 'w') as f:
-            json.dump(universe, f)
+        with open(UNIVERSE_FILE, 'w') as f: json.dump(universe, f)
         return universe
     return {}
 
@@ -104,75 +84,38 @@ def save_json(path, data):
     with open(path, 'w') as f: json.dump(data, f)
 
 def fetch_prices(ticker):
-    params = {
-        'stock_id': ticker,
-        'start_date': (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'),
-        'end_date': datetime.now().strftime('%Y-%m-%d')
-    }
+    params = {'stock_id': ticker, 'start_date': (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'), 'end_date': datetime.now().strftime('%Y-%m-%d')}
     return get_finmind_data('TaiwanStockPrice', params)
 
 def fetch_financials(ticker):
-    params = {
-        'data_id': ticker,
-        'start_date': (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d'),
-        'end_date': datetime.now().strftime('%Y-%m-%d')
-    }
+    params = {'data_id': ticker, 'start_date': (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d'), 'end_date': datetime.now().strftime('%Y-%m-%d')}
     return get_finmind_data('TaiwanStockFinancialStatements', params)
 
 def update_market_index():
-    """Fetch and update TAIEX market index data once a day"""
     existing_data = load_json_safe(MARKET_INDEX_FILE, {})
     updated_at = datetime.fromisoformat(existing_data.get('updated_at', '1900-01-01T00:00:00'))
-
-    if (datetime.now() - updated_at) < timedelta(days=1):
-        return "SKIP"
-
-    print("Updating TAIEX market index data...", end=' ')
-    params = {
-        'data_id': 'TAIEX',
-        'start_date': (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'),
-        'end_date': datetime.now().strftime('%Y-%m-%d')
-    }
-    data = get_finmind_data('TaiwanStockPrice', params)
+    if (datetime.now() - updated_at) < timedelta(days=1): return "SKIP"
+    data = get_finmind_data('TaiwanStockPrice', {'data_id': 'TAIEX', 'start_date': (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'), 'end_date': datetime.now().strftime('%Y-%m-%d')})
     if data:
-        save_json(MARKET_INDEX_FILE, {
-            'ticker': 'TAIEX',
-            'updated_at': datetime.now().isoformat(),
-            'prices': data
-        })
-        print("✅")
+        save_json(MARKET_INDEX_FILE, {'ticker': 'TAIEX', 'updated_at': datetime.now().isoformat(), 'prices': data})
         return "SUCCESS"
-    print("❌")
     return "FAIL"
 
 def update_stock(ticker, name, score=None, health_status=None):
-    """Handles split-fetching and state management for a single stock"""
     file_path = os.path.join(DATA_DIR, f"{ticker}.json")
     existing_data = load_json_safe(file_path, {})
-
-    # 1. Determine TTL based on score
     if score is None: score = 0
     ttl_hours = TTL_HIGH_SCORE if score > 0.9 else (TTL_MID_SCORE if score > 0.6 else TTL_LOW_SCORE)
-
     updated_at = datetime.fromisoformat(existing_data.get('updated_at', '1900-01-01T00:00:00'))
     needs_price = (datetime.now() - updated_at) > timedelta(hours=ttl_hours)
-
-    # 2. Financials TTL (Update only every 30 days)
     fin_updated_at = datetime.fromisoformat(existing_data.get('fin_updated_at', '1900-01-01T00:00:00'))
     needs_fin = (datetime.now() - fin_updated_at) > timedelta(hours=TTL_FINANCIALS)
+    if not needs_price and not needs_fin: return "SKIP"
 
-    if not needs_price and not needs_fin:
-        return "SKIP"
-
-    print(f"Updating {ticker} [{'Price' if needs_price else ''} {'Fin' if needs_fin else ''}]...", end=' ')
     time.sleep(random.uniform(0.2, 0.5))
-
     try:
-        # 嘗試獲取新數據，如果失敗則保留舊數據但重置 TTL
         new_prices = fetch_prices(ticker) if needs_price else None
         new_fins = fetch_financials(ticker) if needs_fin else None
-
-        # 只要其中一個成功獲取，就更新對應欄位並刷新時間戳
         updated = False
         if new_prices:
             existing_data['prices'] = new_prices
@@ -181,155 +124,104 @@ def update_stock(ticker, name, score=None, health_status=None):
             existing_data['financials'] = new_fins
             existing_data['fin_updated_at'] = datetime.now().isoformat()
             updated = True
-
         if updated:
-            # 刷新主時間戳，讓標的回到隊列末端
             existing_data['updated_at'] = datetime.now().isoformat()
             existing_data['ticker'] = ticker
             existing_data['name'] = name
             save_json(file_path, existing_data)
             if health_status is not None:
+                # SUCCESS immediately resets the stock to active
                 health_status[ticker] = {'fail_count': 0, 'status': 'active'}
-            print("✅")
             return "SUCCESS"
         else:
-            # 如果兩項都失敗，重置 TTL 讓下次能重新輪詢
             if needs_price or needs_fin:
                 existing_data['updated_at'] = datetime.now().isoformat()
                 existing_data['fin_updated_at'] = datetime.now().isoformat()
                 save_json(file_path, existing_data)
-                print("⏱️  (TTL reset)")
-                # 不增加 fail_count，避免變成 dead stock
             return "SKIP"
-
-    except Exception as e:
-        print(f"❌ {e}")
+    except Exception:
         if health_status is not None:
             count = health_status.get(ticker, {}).get('fail_count', 0) + 1
-            status = 'dead' if count >= 3 else 'active'
-            health_status[ticker] = {
-                'fail_count': count,
-                'status': status,
-                'last_attempt_at': datetime.now().isoformat()
-            }
+            health_status[ticker] = {'fail_count': count, 'status': 'dead' if count >= 3 else 'active', 'last_attempt_at': datetime.now().isoformat()}
         return "FAIL"
 
 def main():
-    # Update Market Index first
     update_market_index()
-
     universe_map = get_universe()
     if not universe_map: return
-
     ranks_data = load_json_safe(RESULT_FILE, {'data': []})
-    ranks = ranks_data.get('data', [])
-    rank_map = {item['ticker']: item['final_score'] for item in ranks}
+    rank_map = {item['ticker']: item['final_score'] for item in ranks_data.get('data', [])}
     health_status = load_json_safe(HEALTH_STATUS_FILE, {})
 
-    # --- TIER 1: High-Score Priority ---
+    processed_count = 0
+    max_calls_per_hour = 60
+    
+    # --- PHASE 1: High-Score Priority (Fast Track) ---
     print("\n--- Phase 1: High-Score Priority ---")
     high_score_tickers = [t for t, s in rank_map.items() if s > 0.9]
     for ticker in high_score_tickers:
-        if ticker in universe_map:
-            update_stock(ticker, universe_map[ticker], score=rank_map[ticker], health_status=health_status)
+        if processed_count >= max_calls_per_hour: break
+        if ticker in universe_map and health_status.get(ticker, {}).get('status') != 'dead':
+            res = update_stock(ticker, universe_map[ticker], score=rank_map[ticker], health_status=health_status)
+            if res == "SUCCESS": processed_count += 1
+            print(f"  {ticker}: {res}")
 
-    # --- TIER 2: Missing / Pending Repair ---
-    print("\n--- Phase 2: Missing Data Repair ---")
-    universe_list = list(universe_map.keys())
-    missing_tickers = [t for t in universe_list if not os.path.exists(os.path.join(DATA_DIR, f"{t}.json"))]
-
-    # Filter out 'dead' stocks unless they are due for a re-check
-    repair_list = []
-    for t in missing_tickers:
-        status_info = health_status.get(t, {})
-        if status_info.get('status') != 'dead':
-            repair_list.append(t)
-        else:
-            last_attempt = status_info.get('last_attempt_at', '1900-01-01T00:00:00')
-            if (datetime.now() - datetime.fromisoformat(last_attempt)).days >= RECHECK_INTERVAL:
-                repair_list.append(t)
-
-    # Limit repair batch to avoid API exhaustion
-    for ticker in repair_list[:50]:
-        update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
-
-    # --- TIER 3: Score-Based Regular Scan (FIXED: Use individual TTL per score tier) ---
-    print("\n--- Phase 3: Process Expired Stocks (Score-Based TTL) ---")
-
-    # Gather all existing stocks with their scores and determine appropriate TTL
-    stock_ages = []
-    for ticker in universe_list:
+    # --- PHASE 2: Oldest Active Data (Unified Queue) ---
+    print("\n--- Phase 2: Updating Oldest Active Stocks ---")
+    update_candidates = []
+    for ticker in universe_map:
+        if health_status.get(ticker, {}).get('status') == 'dead':
+            continue
+            
         file_path = os.path.join(DATA_DIR, f"{ticker}.json")
-        if os.path.exists(file_path):
+        if not os.path.exists(file_path):
+            update_candidates.append({'ticker': ticker, 'updated_at': '1900-01-01T00:00:00', 'score': rank_map.get(ticker, 0)})
+        else:
             data = load_json_safe(file_path, {})
             updated_at = data.get('updated_at', '1900-01-01T00:00:00')
-            
-            # Get score from ranking (default 0 for dead/unknown stocks)
-            stock_score = rank_map.get(ticker, 0)
-            health_info = health_status.get(ticker, {})
-            
-            # Skip dead stocks unless re-check time has passed
-            if health_info.get('status') == 'dead':
-                last_attempt = health_info.get('last_attempt_at', '1900-01-01T00:00:00')
-                days_since_recheck = (datetime.now() - datetime.fromisoformat(last_attempt)).days
-                if days_since_recheck < RECHECK_INTERVAL:
-                    continue
-            
-            # Calculate relative age in hours
-            current_age_hours = (datetime.now() - datetime.fromisoformat(updated_at)).total_seconds() / 3600
-            
-            # CRITICAL FIX: Determine appropriate TTL based on score tier
-            ttl_hours = TTL_HIGH_SCORE if stock_score > 0.9 else (TTL_MID_SCORE if stock_score > 0.6 else TTL_LOW_SCORE)
-            
-            stock_ages.append({
-                'ticker': ticker,
-                'updated_at': updated_at,
-                'age_hours': current_age_hours,
-                'score': stock_score,
-                'ttl_hours': ttl_hours
-            })
+            score = rank_map.get(ticker, 0)
+            ttl_hours = TTL_HIGH_SCORE if score > 0.9 else (TTL_MID_SCORE if score > 0.6 else TTL_LOW_SCORE)
+            if (datetime.now() - datetime.fromisoformat(updated_at)).total_seconds() / 3600 > ttl_hours:
+                update_candidates.append({'ticker': ticker, 'updated_at': updated_at, 'score': score})
 
-    # Filter stocks that have EXCEEDED their individual TTL thresholds (FIXED!)
-    expired_batch = [s for s in stock_ages if s['age_hours'] > s['ttl_hours']]
+    update_candidates.sort(key=lambda x: x['updated_at'])
+    print(f"  Found {len(update_candidates)} active stocks needing update. Budget remaining: {max_calls_per_hour - processed_count}")
     
-    print(f"  Total active stocks checked: {len(stock_ages)}")
-    print(f"  Found {len(expired_batch)} stocks exceeding their TTL thresholds")
-    
-    # Group by score tiers for transparency
-    high_score_count = len([s for s in expired_batch if s['score'] > 0.9])
-    mid_score_count = len([s for s in expired_batch if 0.6 <= s['score'] <= 0.9])
-    low_score_count = len([s for s in expired_batch if s['score'] < 0.6])
-    
-    print(f"    - High Score (>0.9): {high_score_count} stocks (TTL: {TTL_HIGH_SCORE}h)")
-    print(f"    - Mid Score (0.6-0.9): {mid_score_count} stocks (TTL: {TTL_MID_SCORE}h)")
-    print(f"    - Low Score (<0.6): {low_score_count} stocks (TTL: {TTL_LOW_SCORE}h)")
-
-    # Sort by age (oldest first) to process critical data first
-    expired_batch.sort(key=lambda x: x['age_hours'])
-    
-    # Process each stock individually with proper TTL-based filtering (FIXED!)
-    # CRITICAL FIX: Limit API calls to avoid rate limiting (max 60/hour for production)
-    max_calls_per_hour = 60
-    processed_count = 0
-    
-    for ticker_info in expired_batch:
+    for candidate in update_candidates:
         if processed_count >= max_calls_per_hour:
-            print(f"\n⏸️  Rate limit protection triggered. Pausing API calls until next hour.")
+            print("\n⏸️  Rate limit reached. Stopping.")
             break
+        ticker = candidate['ticker']
+        res = update_stock(ticker, universe_map[ticker], score=candidate['score'], health_status=health_status)
+        if res == "SUCCESS": processed_count += 1
+        print(f"  Updating {ticker} [Age: {candidate['updated_at']}]: {res}")
+        if processed_count % 5 == 0: time.sleep(6)
+
+    # --- PHASE 3: Recovery Phase (Dead Stocks) ---
+    # We only attempt to recover a very small number of dead stocks per cycle to save API budget.
+    print("\n--- Phase 3: Recovery Phase (Dead Stocks) ---")
+    dead_stocks = [t for t, info in health_status.items() if info.get('status') == 'dead']
+    if dead_stocks:
+        # Shuffle to ensure different dead stocks get a chance over time
+        random.shuffle(dead_stocks)
+        # Limit recovery to 5 stocks per hour
+        recovery_limit = 5
+        recovery_batch = dead_stocks[:recovery_limit]
+        print(f"  Attempting to recover {len(recovery_batch)} dead stocks...")
         
-        ticker = ticker_info['ticker']
-        print(f"  Updating {ticker} [Score: {ticker_info['score']:.2f}, TTL: {ticker_info['ttl_hours']}h, Age: {ticker_info['age_hours']:.1f}h]...", end=' ')
-        
-        update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
-        print()
-        processed_count += 1
-        
-        # Rate limit pacing: wait 6 seconds between calls (60 / 10 = 6 sec)
-        if processed_count % 5 == 0:
-            time.sleep(6)
+        for ticker in recovery_batch:
+            if processed_count >= max_calls_per_hour: break
+            if ticker in universe_map:
+                res = update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status)
+                if res == "SUCCESS": 
+                    processed_count += 1
+                    print(f"  ✨ {ticker}: Recovered! (Status -> active)")
+                else:
+                    print(f"  ❌ {ticker}: Still dead ({res})")
+                time.sleep(2)
 
     save_json(HEALTH_STATUS_FILE, health_status)
-    print(f"\n✅ Cycle complete. Rate limit protection active.")
+    print(f"\n✅ Cycle complete. Total successful updates: {processed_count}")
 
 if __name__ == "__main__":
     main()
