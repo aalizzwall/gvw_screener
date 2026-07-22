@@ -14,24 +14,45 @@ def calculate_momentum_score(prices_df, market_df=None):
     if len(prices_df) < 252:
         return 0
     
-    # 1. Calculate Momentum with safety checks
     def safe_div(n, d):
         return n / d if d > 0 else 0
 
     current_price = prices_df['close'].iloc[-1]
-    ret_3m = safe_div(current_price, prices_df['close'].iloc[-63]) - 1 if len(prices_df) >= 63 else 0
-    ret_6m = safe_div(current_price, prices_df['close'].iloc[-126]) - 1 if len(prices_df) >= 126 else 0
-    ret_12m = safe_div(current_price, prices_df['close'].iloc[-252]) - 1 if len(prices_df) >= 252 else 0
     
-    # Original GVW: Focus on 12-month momentum as primary metric
-    abs_momentum = (ret_3m + ret_6m + ret_12m) / 3
+    # Window definitions
+    windows = {'3m': 63, '6m': 126, '12m': 252}
+    returns = {}
     
+    for label, window in windows.items():
+        if len(prices_df) >= window:
+            returns[label] = safe_div(current_price, prices_df['close'].iloc[-window]) - 1
+        else:
+            returns[label] = 0
+    
+    # 1. Absolute Momentum (Avg of 3 windows)
+    abs_momentum = sum(returns.values()) / 3
+    
+    # 2. Relative Strength (Compared to Market)
     if market_df is not None and not market_df.empty:
-        market_close = market_df['close']
-        market_ret_12m = (market_close.iloc[-1] / market_close.iloc[-252]) - 1 if len(market_close) >= 252 else 0
-        relative_strength = ret_12m - market_ret_12m
-        # Boost momentum if stock outperforms market
-        return abs_momentum * (1 + max(0, relative_strength))
+        m_close = market_df['close']
+        m_returns = {}
+        for label, window in windows.items():
+            if len(m_close) >= window:
+                m_returns[label] = (m_close.iloc[-1] / m_close.iloc[-window]) - 1
+            else:
+                m_returns[label] = 0
+        
+        # Calculate Weighted RS: (3m*0.2 + 6m*0.3 + 12m*0.5)
+        # Focus more on the long term but acknowledge short term strength
+        rs_value = (
+            (returns['3m'] - m_returns['3m']) * 0.2 +
+            (returns['6m'] - m_returns['6m']) * 0.3 +
+            (returns['12m'] - m_returns['12m']) * 0.5
+        )
+        
+        # Boost: If RS is positive, it multiplies the momentum score. 
+        # If RS is negative (underperforming), it penalizes it.
+        return abs_momentum * (1 + rs_value)
     
     return abs_momentum
 
@@ -179,7 +200,8 @@ def main():
         with open(HEALTH_STATUS_FILE, 'r') as f:
             health_status = json.load(f)
 
-    df_market = pd.DataFrame(market_data.get('prices', []))
+    # Correct path to index history: market_data['history']
+    df_market = pd.DataFrame(market_data.get('history', []))
     if not df_market.empty:
         df_market['close'] = pd.to_numeric(df_market['close'], errors='coerce')
         df_market = df_market.dropna(subset=['close'])
@@ -207,31 +229,28 @@ def main():
     print(f"Starting Rank Analysis for {collected_size} stocks...")
     
     all_stocks = []
+    all_stocks = []
     for idx, file in enumerate(files, 1):
         try:
             with open(os.path.join(DATA_DIR, file), 'r') as f:
                 data = json.load(f)
-            
+            if 'ticker' not in data or 'prices' not in data:
+                print(f"  ⚠️  Skipping {file}: missing required keys ({'ticker' if 'ticker' not in data else 'prices'} not found)")
+                continue
             ticker = data['ticker']
             name = data.get('name', 'Unknown')
-            
             df_prices = pd.DataFrame(data['prices'])
             if not df_prices.empty:
                 df_prices['close'] = pd.to_numeric(df_prices['close'], errors='coerce')
                 df_prices = df_prices.dropna(subset=['close'])
-                
                 m_val = calculate_momentum_score(df_prices, df_market)
                 t_val, is_strict_trend = calculate_trend_score(df_prices)
-                q_val = calculate_quality_score(data['financials'])
+                q_val = calculate_quality_score(data.get('financials', []))
                 entry_signal = calculate_entry_signal(df_prices)
                 is_gvw_strict = is_strict_trend and q_val > 0.3
-
-                # Capture sync time ONLY for active stocks to avoid dead-stock noise
                 status_info = health_status.get(ticker, {})
                 is_dead = status_info.get('status') == 'dead'
                 sync_date = data.get('updated_at', '1900-01-01T00:00:00') if not is_dead else None
-
-
                 all_stocks.append({
                     'ticker': ticker,
                     'name': name,
@@ -240,28 +259,34 @@ def main():
                     'q_val': q_val,
                     'entry_signal': entry_signal,
                     'is_gvw_strict': is_gvw_strict,
-                    'sync_date': sync_date
+                    'sync_date': sync_date,
+                    'roe': data.get('roe', 0),
+                    'pb': data.get('pb', 0),
+                    'pe': data.get('pe', 0),
+                    'yield': data.get('yield', 0)
                 })
-            
             if idx % 100 == 0 or idx == collected_size:
                 print(f"Analysis Progress: {idx}/{collected_size} stocks processed...")
+        except (KeyError, json.JSONDecodeError) as e:
+            skip_reason = "missing key" if isinstance(e, KeyError) else "invalid JSON"
+            print(f"  ⚠️  Skipping {file}: {skip_reason}")
         except Exception as e:
-            print(f"Error processing file {file}: {e}")
-    
+            print(f"  ⚠️  Error processing file {file}: {type(e).__name__}: {e}")
     if not all_stocks:
         print("No valid stock data for ranking.")
         return
+
+    df_results = pd.DataFrame(all_stocks)
     
     df_results = pd.DataFrame(all_stocks)
     df_results['m_rank'] = df_results['m_val'].rank(pct=True)
     df_results['q_rank'] = df_results['q_val'].rank(pct=True)
-    df_results['t_score'] = df_results['t_val']  # ✅ 統一命名：raw score 不應該叫 _rank
+    df_results['t_score'] = df_results['t_val']
     
     # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
     df_results['final_score'] = (df_results['m_rank'] * 0.4) + (df_results['t_score'] * 0.3) + (df_results['q_rank'] * 0.3)
-    # Add global oldest sync timestamp (the minimum updated_at across all stocks)
+    
     if 'sync_date' in df_results.columns and not df_results['sync_date'].isna().all():
-        # Convert non-None values to strings and find the minimum date
         valid_dates = df_results['sync_date'].dropna()
         if len(valid_dates) > 0:
             global_oldest_date = str(min(str(x) for x in valid_dates if pd.notna(x)))
@@ -272,16 +297,16 @@ def main():
     
     full_results = df_results[['ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_score', 'q_rank']].to_dict('records')
     
-    # Write results with the global oldest date
     result_output = {
         'data': full_results,
-        'earliest_data_date': global_oldest_date
+        'earliest_data_date': global_oldest_date,
+        'last_update_time': datetime.now().strftime('%Y-%m-%d')
     }
     with open(RESULT_FILE, 'w') as f:
         json.dump(result_output, f)
     
     print(f"System earliest data collected from: {global_oldest_date or 'N/A'}")
-    
+    print(f"Last update time: {datetime.now().strftime('%Y-%m-%d')}")
     print(f"\n✅ Rank analysis complete. Saved {len(full_results)} stocks to {RESULT_FILE}")
     top_10 = df_results.sort_values('final_score', ascending=False).head(10)
     for i, row in enumerate(top_10.itertuples(), 1):

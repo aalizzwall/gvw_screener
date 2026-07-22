@@ -1,0 +1,11 @@
+--- a/.hermes/gvw_screener/gvw_collector.py
++++ a/.hermes/gvw_screener/gvw_collector.py
+@@ -395,7 +395,7 @@ def main():
+             log(traceback.format_exc())
+         else:
+             # 成功完成：記錄一次完整的更新循環
+-            log("✅ CRITICAL: Main loop completed successfully.", level="info")
++            log("✅ CRITICAL: Main loop completed successfully.")
+         try:
+             with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                 f.flush()  # 確保所有日誌都寫入
