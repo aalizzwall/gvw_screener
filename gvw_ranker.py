@@ -6,52 +6,44 @@ DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
 RESULT_FILE = '/home/pi/.hermes/gvw_screener/all_rank.json'
 HEALTH_STATUS_FILE = '/home/pi/.hermes/gvw_screener/health_status.json'
 
-def calculate_momentum_score(prices_df, market_df=None):
+def calculate_momentum_score_numba(current_price, prices_close, market_close=None):
     """
-    Calculates momentum relative to market (Relative Strength)
+    Optimized momentum calculation using numpy, pre-checks data length.
     GVW Original: RS vs TAIEX is critical for identifying true leaders
     """
-    if len(prices_df) < 252:
-        return 0
+    import numpy as np
     
-    def safe_div(n, d):
-        return n / d if d > 0 else 0
-
-    current_price = prices_df['close'].iloc[-1]
+    # Pre-check: need at least 252 data points
+    if len(prices_close) < 252:
+        return 0.0
     
     # Window definitions
     windows = {'3m': 63, '6m': 126, '12m': 252}
     returns = {}
     
     for label, window in windows.items():
-        if len(prices_df) >= window:
-            returns[label] = safe_div(current_price, prices_df['close'].iloc[-window]) - 1
-        else:
-            returns[label] = 0
+        window_size = np.min([window, len(prices_close)])
+        window_prices = prices_close[-window_size:]
+        returns[label] = (current_price / window_prices[-1]) - 1
     
     # 1. Absolute Momentum (Avg of 3 windows)
     abs_momentum = sum(returns.values()) / 3
     
-    # 2. Relative Strength (Compared to Market)
-    if market_df is not None and not market_df.empty:
-        m_close = market_df['close']
+    # 2. Relative Strength (Compared to Market) - only if market data available
+    if market_close is not None and len(market_close) >= 252:
         m_returns = {}
         for label, window in windows.items():
-            if len(m_close) >= window:
-                m_returns[label] = (m_close.iloc[-1] / m_close.iloc[-window]) - 1
-            else:
-                m_returns[label] = 0
+            window_size = np.min([window, len(market_close)])
+            window_m = market_close[-window_size:]
+            m_returns[label] = (current_price / market_close[-1]) - 1
         
         # Calculate Weighted RS: (3m*0.2 + 6m*0.3 + 12m*0.5)
-        # Focus more on the long term but acknowledge short term strength
         rs_value = (
             (returns['3m'] - m_returns['3m']) * 0.2 +
             (returns['6m'] - m_returns['6m']) * 0.3 +
             (returns['12m'] - m_returns['12m']) * 0.5
         )
         
-        # Boost: If RS is positive, it multiplies the momentum score. 
-        # If RS is negative (underperforming), it penalizes it.
         return abs_momentum * (1 + rs_value)
     
     return abs_momentum
@@ -243,7 +235,7 @@ def main():
             if not df_prices.empty:
                 df_prices['close'] = pd.to_numeric(df_prices['close'], errors='coerce')
                 df_prices = df_prices.dropna(subset=['close'])
-                m_val = calculate_momentum_score(df_prices, df_market)
+                m_val = calculate_momentum_score_numba(df_prices, df_market)
                 t_val, is_strict_trend = calculate_trend_score(df_prices)
                 q_val = calculate_quality_score(data.get('financials', []))
                 entry_signal = calculate_entry_signal(df_prices)

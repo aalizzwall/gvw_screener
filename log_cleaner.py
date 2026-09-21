@@ -11,16 +11,16 @@ def clean_log():
     with open(LOG_FILE, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
-    # Precise counting:
-    # 1. Successful updates usually contain '✅'
-    # 2. Let's also track how many times we had to fallback to yfinance
+    # Precise counting based on actual log output:
+    # 1. '✅ XXX - Data updated (Price/Quality/Industry/Money)' = successful update
+    # 2. '❌ XXX - Failed to fetch price from yfinance' = fallback to yfinance
     success_count = 0
     fallback_count = 0
     
     for line in lines:
-        if '✅' in line:
+        if '✅' in line and 'Data updated' in line:
             success_count += 1
-        if 'switching to yfinance track' in line:
+        if '❌' in line and 'Failed to fetch price from yfinance' in line:
             fallback_count += 1
 
     # Clear the file but keep the summary of the last period

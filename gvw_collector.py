@@ -256,24 +256,32 @@ def update_stock(ticker, name, score=None, health_status=None, force=False, fina
             yf_ticker = yf.Ticker(f"{ticker}.TW")
             info = yf_ticker.info
             
-            # 1. Try yfinance first (correct keys)
-            roe = info.get('returnOnEquity')
-            pb = info.get('priceToBook')
-            pe = info.get('trailingPE')
-            div_yield = info.get('dividendYield')
+            # 1. First, check if we have partial/basic financials from previous failed attempts
+            # This allows us to use cached data even when yfinance fails initially
+            basic_info = basic_info or {}
+            roe = basic_info.get('roe')
+            pb = basic_info.get('pb')
+            pe = basic_info.get('pe')
+            div_yield = basic_info.get('div_yield')
             
-            # 2. Fallback to official TWSE data if yfinance is missing/zero
-            if (roe is None or roe == 0) and financials:
+            # 2. If yfinance gives us something, prefer that
+            yf_roe = info.get('returnOnEquity')
+            yf_pb = info.get('priceToBook')
+            yf_pe = info.get('trailingPE')
+            yf_div = info.get('dividendYield')
+            
+            # 3. Fallback to TWSE data if yfinance is missing/zero AND we have no basic_info
+            if (yf_roe is None or yf_roe == 0) and (roe is None or roe == 0) and financials:
                 pl = financials.get('pl', {})
                 bs = financials.get('bs', {})
                 try:
                     net_income = float(pl.get('本期淨利', 0))
                     assets = float(bs.get('資產總額', 0))
-                    liab = float(bs.get('負債總額', 0))
+                    liab = bs.get('負債總額', 0)
                     equity = assets - liab
                     roe = (net_income / equity) if equity > 0 else 0
                 except: roe = 0
-
+            
             existing_data['roe'] = roe if roe is not None else 0
             existing_data['pb'] = pb if pb is not None else 0
             existing_data['pe'] = pe if pe is not None else 0
@@ -283,7 +291,23 @@ def update_stock(ticker, name, score=None, health_status=None, force=False, fina
                 existing_data['yield'] = round(div_yield * 100, 2) if isinstance(div_yield, float) else 0
             else:
                 existing_data['yield'] = 0
+            
+            # 4. If we got yfinance data, update basic_info cache for next round
+            if (yf_roe is not None and yf_roe > 0) or (yf_pb is not None and yf_pb > 0) or \
+               (yf_pe is not None and yf_pe > 0) or (yf_div is not None):
+                if 'basic_info' not in existing_data:
+                    existing_data['basic_info'] = {'roe': None, 'pb': None, 'pe': None, 'div_yield': None}
                 
+                # Update cached values with yfinance data (more reliable)
+                if yf_roe is not None and yf_roe > 0 and existing_data['basic_info']['roe'] is None:
+                    existing_data['basic_info']['roe'] = round(yf_roe, 2)
+                if yf_pb is not None and yf_pb > 0 and existing_data['basic_info']['pb'] is None:
+                    existing_data['basic_info']['pb'] = round(yf_pb, 2)
+                if yf_pe is not None and yf_pe > 0 and existing_data['basic_info']['pe'] is None:
+                    existing_data['basic_info']['pe'] = round(yf_pe, 2)
+                if yf_div is not None and existing_data['basic_info']['div_yield'] is None:
+                    existing_data['basic_info']['div_yield'] = round(float(yf_div), 2)
+            
             updated = True
             log(f"✅ {ticker} - Financial indicators updated (ROE: {existing_data['roe']:.2f}).")
         except Exception as e:
@@ -378,8 +402,12 @@ def main():
             log("\\nCycle complete.")
             return
             
-        log(f"Updating oldest {len(target_batch)} active stocks...")
+        # Batch logging: print progress every N stocks to reduce I/O
+        # This prevents the cronjob from timing out due to excessive log writes
+        BATCH_INTERVAL = 50
         stats = {'fetches': 0, 'failures': 0, 'skips': 0}
+        log_start_count = 0
+        progress_log_count = 0
         
         for ticker in target_batch:
             sd = market_data.get(ticker, {})
@@ -387,8 +415,13 @@ def main():
             if result == "SUCCESS": stats['fetches'] += 1
             elif result == "FAIL": stats['failures'] += 1
             else: stats['skips'] += 1
-        
-        log(f"Cycle stats: {stats}")
+            
+            # Batch log every BATCH_INTERVAL stocks
+            progress_log_count += 1
+            if progress_log_count >= BATCH_INTERVAL:
+                progress_log_count = 0
+                log(f"[Progress] {progress_log_count + BATCH_INTERVAL}/{len(target_batch)}: {stats['fetches']} success, {stats['failures']} failures, {stats['skips']} skipped...")
+                progress_log_count = -BATCH_INTERVAL  # Reset to negative to avoid double-counting
         save_json(HEALTH_STATUS_FILE, health_status)
         log("\\nCycle complete.")
 
