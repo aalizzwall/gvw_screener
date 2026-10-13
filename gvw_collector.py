@@ -1,57 +1,28 @@
 import os, json, sys, pandas as pd, time, random, math, traceback
 from datetime import datetime, timedelta
-import requests
-import yfinance as yf
+from typing import Dict, Any, List, Optional
 
-# ================= API AVAILABILITY =================
-# TWSE OpenAPI is a public API and does not require a token for basic data.
-# We prioritize TWSE and fallback to yfinance only if the request fails.
+# Import the new abstraction layers
+from src.state.state_manager import StateManager
+from src.providers.twse_adapter import TWSEAdapter
+from src.providers.yahoo_adapter import YahooAdapter
 
-# Mapping of dataset keys to actual OpenAPI paths
-ENDPOINT_MAP = {
-    "top": "/exchangeReport/MI_INDEX",           # Market Index / Overall Stats
-    "financials_pl": "/opendata/t187ap06_L_ci",  # Income Statement (General)
-    "financials_bs": "/opendata/t187ap07_L_ci",  # Balance Sheet (General)
-    "daily_all": "/exchangeReport/STOCK_DAY_ALL", # Daily Trading Info
-    "basic_info": "/opendata/t187ap03_L",        # Company Basic Info (Industry)
-    "shareholders": "/opendata/t187ap02_L",      # Major Shareholders (>10%)
-}
-
-def check_api_availability() -> bool:
-    """Check if TWSE API is accessible. Returns True if available, False otherwise."""
-    try:
-        # Test with the Market Index endpoint
-        res = get_twse_data("top")
-        if res:
-            log("[CHECK API] ✅ TWSE API is accessible.")
-            return True
-        return False
-    except Exception as e:
-        log(f"[CHECK API] ❌ TWSE API connection failed: {e}")
-        return False
-
-DATA_DIR = '/home/pi/.hermes/gvw_screener/data'
-UNIVERSE_FILE = '/home/pi/.hermes/gvw_screener/universe.json'
-POINTER_FILE = '/home/pi/.hermes/gvw_screener/pointer.json'
-RESULT_FILE = '/home/pi/.hermes/gvw_screener/all_rank.json'
-HEALTH_STATUS_FILE = '/home/pi/.hermes/gvw_screener/health_status.json'
-MARKET_INDEX_FILE = '/home/pi/.hermes/gvw_screener/market_index.json'
-LOG_FILE = '/home/pi/.hermes/gvw_screener/collector.log'
+# ================= CONFIGURATION =================
+# Use relative paths for local development/execution
+DATA_DIR = 'data'
+UNIVERSE_FILE = 'universe.json'
+POINTER_FILE = 'pointer.json'
+RESULT_FILE = 'all_rank.json'
+HEALTH_STATUS_FILE = 'health_status.json'
+MARKET_INDEX_FILE = 'market_index.json'
+LOG_FILE = 'collector.log'
 
 # TTL Settings (Hours)
 TTL_HIGH_SCORE = 4    # Score > 0.9
 TTL_MID_SCORE = 24    # Score > 0.6
 TTL_LOW_SCORE = 168   # Others (7 days)
-TTL_FINANCIALS = 720  # Financials update every 30 days
-RECHECK_INTERVAL = 30 # Reduced from 180 to 30 days to prevent "dead" stocks from being forgotten too long
-MAX_CONSECUTIVE_FAILURES = 3  # Skip stock after 3 consecutive fetch failures
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
-]
+MAX_CONSECUTIVE_FAILURES = 3  # Skip stock after 3 consecutive fetch failures
 
 def log(msg):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -60,111 +31,42 @@ def log(msg):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(formatted_msg + '\n')
-            f.flush()  # Ensure it's written to disk immediately
+            f.flush()
     except:
         pass
 
-def get_twse_data(dataset_key, params=None):
-    path = ENDPOINT_MAP.get(dataset_key)
-    if not path:
-        log(f"[TRACK: TWSE] ❌ Dataset key '{dataset_key}' not found in mapping.")
-        return None
+class DataProviderFactory:
+    """
+    Factory to provide the appropriate DataProvider with failover logic.
+    """
+    def __init__(self, twse_adapter: TWSEAdapter, yahoo_adapter: YahooAdapter):
+        self.twse = twse_adapter
+        self.yahoo = yahoo_adapter
 
-    url = f"https://openapi.twse.com.tw/v1{path}"
-    query_params = {}
-    if params:
-        query_params.update(params)
+    def fetch_all_data(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Attempts to fetch data from TWSE first, and falls back to Yahoo Finance on failure.
+        """
+        try:
+            data = self.twse.fetch_stock_data(ticker)
+            if data and not data.get('error'):
+                return data
+        except Exception as e:
+            log(f"[FACTORY] TWSE failed for {ticker}: {e}")
 
-    if 'start_date' not in query_params:
-        query_params['start_date'] = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
-    if 'end_date' not in query_params:
-        query_params['end_date'] = datetime.now().strftime('%Y-%m-%d')
-
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    try:
-        response = requests.get(url, params=query_params, headers=headers, timeout=30)
-        if response.status_code == 200:
-            log(f"[TRACK: TWSE] ✅ Successfully fetched {dataset_key} data from {path}.")
-            return response.json()
-        elif response.status_code == 429:
-            log("[TRACK: TWSE] ⚠️ Rate limited. Retrying after 60s...")
-            time.sleep(60)
-            response = requests.get(url, params=query_params, headers=headers, timeout=30)
-            if response.status_code == 200:
-                log(f"[TRACK: TWSE] ✅ Retry successful!")
-                return response.json()
-            else:
-                log(f"[TRACK: TWSE] ❌ Still failed with HTTP {response.status_code}")
-                return None
-        else:
-            log(f"[TRACK: TWSE] ❌ HTTP {response.status_code} - API unavailable")
-            return None
-    except Exception as e:
-        log(f"[TRACK: TWSE] ❌ Unexpected error: {e}")
-        return None
-
-def fetch_prices_yfinance(ticker):
-    import pytz
-    symbol = f"{ticker}.TW"
-    yf_ticker = yf.Ticker(symbol)
-    try:
-        # Use historical data which is more reliable
-        df = yf_ticker.history(period="1y", interval="1d")
-        if df is None or df.empty or len(df) == 0:
-            return None
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        try:
+            data = self.yahoo.fetch_stock_data(ticker)
+            if data and not data.get('error'):
+                return data
+        except Exception as e:
+            log(f"[FACTORY] Yahoo failed for {ticker}: {e}")
             
-        prices = []
-        valid_dates = []
-        for date, row in df.iterrows():
-            prices.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'close': float(row['Close']),
-                'open': float(row['Open']),
-                'high': float(row['High']),
-                'low': float(row['Low']),
-                'volume': int(row['Volume'])
-            })
-            valid_dates.append(date.strftime('%Y-%m-%d'))
-        if len(prices) > 0:
-            return prices
-    except Exception as e:
-        log(f"[TRACK: yfinance] ❌ Request failed: {e}")
-        return None
-
-def fetch_prices_multi_track(ticker):
-    # Always try yfinance first (more reliable)
-    log(f"[TRACK: yfinance] Fetching {ticker}.TW...")
-    import pytz
-    symbol = f"{ticker}.TW"
-    yf_ticker = yf.Ticker(symbol)
-    try:
-        # Use historical data which is more reliable
-        df = yf_ticker.history(period="1d", interval="1d", start=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
-        if df is None or df.empty or len(df) == 0:
-            return None
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
-        if len(df) == 0:
-            return None
-            
-        prices = [{'date': df['Date'].iloc[0].strftime('%Y-%m-%d'), 'close': float(df['Close'].iloc[0]),
-                   'open': float(df['Open'].iloc[0]), 'high': float(df['High'].iloc[0]),
-                   'low': float(df['Low'].iloc[0]), 'volume': int(df['Volume'].iloc[0])}]
-        return prices
-    except Exception as e:
-        log(f"[TRACK: yfinance] ❌ Failed to fetch {ticker}.TW from Yahoo: {e}")
         return None
 
 def get_universe():
-    log("ℹ️ TWSE API unavailable, using saved universe from file.")
     if os.path.exists(UNIVERSE_FILE):
         with open(UNIVERSE_FILE, 'r') as f: return json.load(f)
-    log("❌ Error: Universe file not found. Please create universe.json manually.")
+    log("❌ Error: Universe file not found.")
     return {}
 
 def load_json_safe(path, default):
@@ -175,16 +77,19 @@ def load_json_safe(path, default):
     return default
 
 def save_json(path, data):
-    with open(path, 'w') as f: json.dump(data, f)
+    try:
+        with open(path, 'w') as f: json.dump(data, f)
+    except Exception as e:
+        log(f"Error saving {path}: {e}")
 
 def calculate_quality_score(pl_data, bs_data):
     try:
-        rev_curr = float(pl_data.get('營業收入', 0))
+        rev_curr = float(pl_data.get('revenue', 0) or pl_data.get('營業收入', 0))
         rev_growth = 0.2 if rev_curr > 0 else 0 
-        net_income = float(pl_data.get('本期淨利', 0))
+        net_income = float(pl_data.get('net_income', 0) or pl_data.get('本期淨利', 0))
         margin = (net_income / rev_curr) if rev_curr > 0 else 0
-        total_assets = float(bs_data.get('資產總額', 0))
-        total_liab = float(bs_data.get('負債總額', 0))
+        total_assets = float(bs_data.get('total_assets', 0) or bs_data.get('資產總額', 0))
+        total_liab = float(bs_data.get('total_liabilities', 0) or bs_data.get('負債總額', 0))
         debt_ratio = (total_liab / total_assets) if total_assets > 0 else 1.0
         s_growth = min(1.0, max(0, (rev_growth - 0.1) / 0.3)) 
         s_margin = min(1.0, max(0, (margin - 0.05) / 0.15))
@@ -195,181 +100,91 @@ def calculate_quality_score(pl_data, bs_data):
         log(f"Quality score calc error: {e}")
         return 0.5
 
-def fetch_index_history(ticker="^TWII", period="1y"):
-    try:
-        log(f"[TRACK: yfinance] Fetching index history for {ticker}...")
-        import yfinance as yf
-        idx = yf.Ticker(ticker)
-        hist = idx.history(period=period)
-        if hist.empty:
-            return None
-        data = [{"date": date.strftime('%Y-%m-%d'), "close": float(close)} 
-                for date, close in zip(hist.index, hist['Close'])]
-        return data
-    except Exception as e:
-        log(f"❌ Failed to fetch index history: {e}")
-        return None
-
-def update_market_index():
-    existing_data = load_json_safe(MARKET_INDEX_FILE, {})
-    updated_at = datetime.fromisoformat(existing_data.get('updated_at', '1900-01-01T00:00:00'))
-    market_stats = get_twse_data("top")
+def update_market_index(factory: DataProviderFactory):
+    # Update TWSE Market Index
+    market_stats = factory.twse.fetch_market_index("TWII")
     if market_stats:
         save_json(MARKET_INDEX_FILE, {
             "updated_at": datetime.now().isoformat(),
             "stats": market_stats
         })
-        log("✅ Market index stats updated.")
+        log("✅ Market index stats updated (TWSE).")
 
+    # Update History via Yahoo
     index_history_file = os.path.join(DATA_DIR, "market_index.json")
-    hist_data = fetch_index_history()
+    hist_data = factory.yahoo.fetch_market_index("^TWII")
     if hist_data:
         save_json(index_history_file, {"updated_at": datetime.now().isoformat(), "history": hist_data})
-        log("✅ Market index history updated.")
+        log("✅ Market index history updated (Yahoo).")
     else:
         log("⚠️ Market index history update failed.")
 
-def update_stock(ticker, name, score=None, health_status=None, force=False, financials=None, basic_info=None, shareholders=None):
-    existing_data = load_json_safe(os.path.join(DATA_DIR, f"{ticker}.json"), {})
+def update_stock(ticker, name, provider_factory: DataProviderFactory, score=None, health_status=None, force=False):
+    state_manager = StateManager(DATA_DIR, HEALTH_STATUS_FILE)
+    existing_data = state_manager.get_stock_data(ticker)
     health = health_status.get(ticker, {}) if health_status else {}
+    
     if health.get('status') == 'dead':
-        log(f"⏭️  Skipping {ticker}: permanently dead (fail_count={health.get('fail_count')})")
+        log(f"⏭️  Skipping {ticker}: permanently dead")
         return "SKIP"
     
     if score is None:
         score = 0
     ttl_hours = TTL_HIGH_SCORE if score > 0.9 else (TTL_MID_SCORE if score > 0.6 else TTL_LOW_SCORE)
-    updated_at = existing_data.get('updated_at', '1900-01-01T00:00:00')
-    needs_price = True if force else (datetime.fromisoformat(updated_at) + timedelta(hours=ttl_hours) < datetime.now())
+    updated_at_str = existing_data.get('updated_at', '1900-01-01T00:00:00')
+    updated_at = datetime.fromisoformat(updated_at_str)
+    needs_update = True if force else (updated_at + timedelta(hours=ttl_hours) < datetime.now())
     
     updated = False
-    if needs_price:
-        log(f"[TRACK: yfinance] Fetching price and financial info for {ticker}...")
-        new_prices = fetch_prices_yfinance(ticker)
-        if new_prices:
-            existing_data['prices'] = new_prices
-            updated = True
-        else:
-            log(f"❌ {ticker} - Failed to fetch price from yfinance")
-                
-        try:
-            yf_ticker = yf.Ticker(f"{ticker}.TW")
-            info = yf_ticker.info
+    if needs_update:
+        log(f"[TRACK] Fetching data for {ticker} using DataProvider...")
+        new_data = provider_factory.fetch_all_data(ticker)
+        
+        if new_data:
+            # Update financial/basic info
+            existing_data['financials'] = new_data.get('financials', {})
+            existing_data['basic_info'] = new_data.get('basic_info', {})
+            existing_data['shareholders'] = new_data.get('shareholders', [])
             
-            # 1. First, check if we have partial/basic financials from previous failed attempts
-            # This allows us to use cached data even when yfinance fails initially
-            basic_info = basic_info or {}
-            roe = basic_info.get('roe')
-            pb = basic_info.get('pb')
-            pe = basic_info.get('pe')
-            div_yield = basic_info.get('div_yield')
+            new_score = calculate_quality_score(
+                existing_data['financials'].get('income_statement', {}),
+                existing_data['financials'].get('balance_sheet', {})
+            )
             
-            # 2. If yfinance gives us something, prefer that
-            yf_roe = info.get('returnOnEquity')
-            yf_pb = info.get('priceToBook')
-            yf_pe = info.get('trailingPE')
-            yf_div = info.get('dividendYield')
-            
-            # 3. Fallback to TWSE data if yfinance is missing/zero AND we have no basic_info
-            if (yf_roe is None or yf_roe == 0) and (roe is None or roe == 0) and financials:
-                pl = financials.get('pl', {})
-                bs = financials.get('bs', {})
-                try:
-                    net_income = float(pl.get('本期淨利', 0))
-                    assets = float(bs.get('資產總額', 0))
-                    liab = bs.get('負債總額', 0)
-                    equity = assets - liab
-                    roe = (net_income / equity) if equity > 0 else 0
-                except: roe = 0
-            
-            existing_data['roe'] = roe if roe is not None else 0
-            existing_data['pb'] = pb if pb is not None else 0
-            existing_data['pe'] = pe if pe is not None else 0
-            
-            # Handle dividend yield separately
-            if div_yield is not None:
-                existing_data['yield'] = round(div_yield * 100, 2) if isinstance(div_yield, float) else 0
-            else:
-                existing_data['yield'] = 0
-            
-            # 4. If we got yfinance data, update basic_info cache for next round
-            if (yf_roe is not None and yf_roe > 0) or (yf_pb is not None and yf_pb > 0) or \
-               (yf_pe is not None and yf_pe > 0) or (yf_div is not None):
-                if 'basic_info' not in existing_data:
-                    existing_data['basic_info'] = {'roe': None, 'pb': None, 'pe': None, 'div_yield': None}
-                
-                # Update cached values with yfinance data (more reliable)
-                if yf_roe is not None and yf_roe > 0 and existing_data['basic_info']['roe'] is None:
-                    existing_data['basic_info']['roe'] = round(yf_roe, 2)
-                if yf_pb is not None and yf_pb > 0 and existing_data['basic_info']['pb'] is None:
-                    existing_data['basic_info']['pb'] = round(yf_pb, 2)
-                if yf_pe is not None and yf_pe > 0 and existing_data['basic_info']['pe'] is None:
-                    existing_data['basic_info']['pe'] = round(yf_pe, 2)
-                if yf_div is not None and existing_data['basic_info']['div_yield'] is None:
-                    existing_data['basic_info']['div_yield'] = round(float(yf_div), 2)
-            
-            updated = True
-            log(f"✅ {ticker} - Financial indicators updated (ROE: {existing_data['roe']:.2f}).")
-        except Exception as e:
-            log(f"⚠️ {ticker} - Failed to fetch financial info: {e}")
-
-        if updated:
+            existing_data['score'] = new_score
             existing_data['updated_at'] = datetime.now().isoformat()
+            updated = True
+            log(f"✅ {ticker} - Data updated (Score: {new_score}).")
         else:
-            existing_data['updated_at'] = datetime.now().isoformat()
-            log(f"⚠️ {ticker} - Total update failure, but refreshing timestamp to avoid queue block.")
+            log(f"❌ {ticker} - Provider failed to return data.")
+            return "FAIL"
     else:
-        log(f"⏱️  {ticker}: Will retry later (price TTL={ttl_hours}h)")
+        log(f"⏱️  {ticker}: TTL not expired.")
         
-    if health.get('status') == 'dead' or health.get('fail_count', 0) >= 3:
-        log(f"⏭️  Skipping {ticker}: unhealthy (status={health.get('status')})")
-        return "SKIP"
-        
-    log(f"✅ {ticker} - Data updated (Price/Quality/Industry/Money), Health: {health.get('status', 'unknown')}")
-    save_json(os.path.join(DATA_DIR, f"{ticker}.json"), existing_data)
+    if updated:
+        state_manager.save_stock_data(ticker, existing_data)
+    
     return "SUCCESS"
 
 def main():
+    # Initialize Adapters and Factory
+    twse_adapter = TWSEAdapter()
+    yahoo_adapter = YahooAdapter()
+    factory = DataProviderFactory(twse_adapter, yahoo_adapter)
+    
+    state_manager = StateManager(DATA_DIR, HEALTH_STATUS_FILE)
+
     try:
-        update_market_index()
+        update_market_index(factory)
         universe_map = get_universe()
         if not universe_map: 
             log("❌ Critical Error: Universe map is empty.")
             return
+
         ranks_data = load_json_safe(RESULT_FILE, {'data': []})
         ranks = ranks_data.get('data', [])
         rank_map = {item['ticker']: item['final_score'] for item in ranks}
-        health_status = load_json_safe(HEALTH_STATUS_FILE, {})
-
-        log("\\n--- Phase 0: Pre-loading Market Data ---")
-        market_data = {}
-        try:
-            pl_all = get_twse_data("financials_pl") or []
-            bs_all = get_twse_data("financials_bs") or []
-            info_all = get_twse_data("basic_info") or []
-            sh_all = get_twse_data("shareholders") or []
-            
-            pl_map = {item.get('公司代號'): item for item in pl_all if isinstance(item, dict)}
-            bs_map = {item.get('公司代號'): item for item in bs_all if isinstance(item, dict)}
-            info_map = {item.get('公司代號'): item for item in info_all if isinstance(item, dict)}
-            
-            sh_map = {}
-            for item in sh_all:
-                if isinstance(item, dict):
-                    ticker = item.get('公司代號')
-                    if ticker:
-                        sh_map.setdefault(ticker, []).append(item)
-            
-            for ticker in universe_map:
-                market_data[ticker] = {
-                    'pl': pl_map.get(ticker, {}),
-                    'bs': bs_map.get(ticker, {}),
-                    'info': info_map.get(ticker, {}),
-                    'sh': sh_map.get(ticker, [])
-                }
-            log(f"✅ Pre-loaded financials, basic info and shareholders for {len(market_data)} stocks.")
-        except Exception as e:
-            log(f"⚠️ Market data pre-load failed: {e}")
+        health_status = state_manager.get_health_status()
 
         log("\\n--- Global Oldest-First Polling ---")
         all_stocks = []
@@ -379,16 +194,12 @@ def main():
                 data = load_json_safe(file_path, {})
                 updated_at = data.get('updated_at', '1900-01-01T00:00:00')
             else:
-                updated_at = '1900-01-01T00:00:00' # Missing data is oldest
+                updated_at = '1900-01-01T00:00:00'
             all_stocks.append((t, updated_at))
 
-        # Sort all stocks by update time (oldest first)
         all_stocks.sort(key=lambda x: x[1])
-        
-        # Calculate how many we SHOULD update (10% of total universe)
         num_to_update = math.ceil(len(all_stocks) * 0.1)
         
-        # Find target_batch: iterate through sorted list and pick NON-DEAD stocks until quota is met
         target_batch = []
         for t, t_upd in all_stocks:
             if len(target_batch) >= num_to_update:
@@ -397,41 +208,23 @@ def main():
                 target_batch.append(t)
         
         if not target_batch:
-            log("No active stocks available to update in this cycle.")
-            save_json(HEALTH_STATUS_FILE, health_status)
-            log("\\nCycle complete.")
+            log("No active stocks available to update.")
             return
             
-        # Batch logging: print progress every N stocks to reduce I/O
-        # This prevents the cronjob from timing out due to excessive log writes
-        BATCH_INTERVAL = 50
         stats = {'fetches': 0, 'failures': 0, 'skips': 0}
-        log_start_count = 0
-        progress_log_count = 0
-        
         for ticker in target_batch:
-            sd = market_data.get(ticker, {})
-            result = update_stock(ticker, universe_map[ticker], score=rank_map.get(ticker, 0), health_status=health_status, force=True, financials={'pl': sd.get('pl'), 'bs': sd.get('bs')}, basic_info=sd.get('info'), shareholders=sd.get('sh'))
+            result = update_stock(ticker, universe_map.get(ticker, ""), factory, 
+                                  score=rank_map.get(ticker, 0), 
+                                  health_status=health_status, force=True)
             if result == "SUCCESS": stats['fetches'] += 1
             elif result == "FAIL": stats['failures'] += 1
             else: stats['skips'] += 1
             
-            # Batch log every BATCH_INTERVAL stocks
-            progress_log_count += 1
-            if progress_log_count >= BATCH_INTERVAL:
-                progress_log_count = 0
-                log(f"[Progress] {progress_log_count + BATCH_INTERVAL}/{len(target_batch)}: {stats['fetches']} success, {stats['failures']} failures, {stats['skips']} skipped...")
-                progress_log_count = -BATCH_INTERVAL  # Reset to negative to avoid double-counting
-        save_json(HEALTH_STATUS_FILE, health_status)
-        log("\\nCycle complete.")
+        log(f"\\nCycle complete. Stats: {stats}")
 
     except Exception as e:
         log(f"❌ CRITICAL ERROR in main(): {e}")
         log(traceback.format_exc())
-    else:
-        log("✅ Main loop completed successfully.")
 
 if __name__ == "__main__":
-    # Check API availability first
-    check_api_availability()
     main()
