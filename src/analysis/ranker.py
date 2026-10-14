@@ -1,0 +1,252 @@
+import os
+import json
+import logging
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+import pandas as pd
+import numpy as np
+
+from src.state.state_manager import StateManager
+
+logger = logging.getLogger(__name__)
+
+def calculate_momentum_score(current_price: float, prices_close: np.ndarray, market_close: Optional[np.ndarray] = None) -> float:
+    """
+    Optimized momentum calculation using numpy.
+    GVW Original: RS vs TAIEX is critical for identifying true leaders.
+    """
+    if len(prices_close) < 252:
+        return 0.0
+
+    windows = {'3m': 63, '6m': 126, '12m': 252}
+    returns = {}
+
+    for label, window in windows.items():
+        window_size = np.min([window, len(prices_close)])
+        window_prices = prices_close[-window_size:]
+        returns[label] = (current_price / window_prices[0]) - 1 if window_prices[0] > 0 else 0.0
+
+    # Absolute Momentum (average of 3 windows)
+    abs_momentum = sum(returns.values()) / 3.0
+
+    # Relative Strength (RS compared to Market Index)
+    if market_close is not None and len(market_close) >= 252:
+        m_returns = {}
+        for label, window in windows.items():
+            window_size = np.min([window, len(market_close)])
+            window_m = market_close[-window_size:]
+            m_returns[label] = (market_close[-1] / window_m[0]) - 1 if window_m[0] > 0 else 0.0
+
+        rs_value = (
+            (returns['3m'] - m_returns['3m']) * 0.2 +
+            (returns['6m'] - m_returns['6m']) * 0.3 +
+            (returns['12m'] - m_returns['12m']) * 0.5
+        )
+        return abs_momentum * (1.0 + rs_value)
+
+    return abs_momentum
+
+def calculate_trend_score(prices_df: pd.DataFrame) -> (float, bool):
+    """
+    Calculate Trend Score based on GVW / Stage 2 Analysis logic.
+    - Stage 2: Price > MA150 > MA200, MA200 slope up, price near 52-week high.
+    """
+    if len(prices_df) < 252:
+        return 0.0, False
+
+    close = prices_df['close']
+    current_price = close.iloc[-1]
+
+    sma150 = close.rolling(window=150).mean().iloc[-1]
+    sma200 = close.rolling(window=200).mean().iloc[-1]
+    sma200_series = close.rolling(window=200).mean()
+    sma200_prev = sma200_series.iloc[-20] if len(sma200_series) >= 20 else sma200
+    low_52w = close.tail(252).min()
+    high_52w = close.tail(252).max()
+
+    if current_price <= sma200:
+        return 0.0, False
+
+    score = 0.0
+    if current_price > sma150:
+        score += 0.3
+    if sma150 > sma200:
+        score += 0.3
+    if sma200 > sma200_prev:
+        score += 0.2
+
+    price_low_ratio = current_price / low_52w if low_52w > 0 else 0
+    price_high_ratio = current_price / high_52w if high_52w > 0 else 0
+
+    if price_low_ratio > 1.25:
+        score += 0.2
+
+    is_strict_trend = (
+        current_price > sma150 and
+        sma150 > sma200 and
+        sma200 > sma200_prev and
+        price_low_ratio > 1.25 and
+        price_high_ratio < 1.30
+    )
+
+    return score, is_strict_trend
+
+def calculate_entry_signal(prices_df: pd.DataFrame) -> str:
+    """
+    Determine entry timing based on proximity to MA20 and MA50.
+    """
+    if len(prices_df) < 50:
+        return "數據不足"
+
+    current_price = prices_df['close'].iloc[-1]
+    sma20 = prices_df['close'].rolling(window=20).mean().iloc[-1]
+    sma50 = prices_df['close'].rolling(window=50).mean().iloc[-1]
+
+    dist20 = (current_price / sma20) - 1 if sma20 > 0 else None
+    dist50 = (current_price / sma50) - 1 if sma50 > 0 else None
+
+    min_dist = min(dist20 if dist20 is not None else 999, dist50 if dist50 is not None else 999)
+    max_dist = max(dist20 if dist20 is not None else -999, dist50 if dist50 is not None else -999)
+
+    if -0.05 <= min_dist <= 0.12:
+        return "🟢 回調買入區"
+    elif max_dist > 0.15:
+        return "🟡 過熱-待回調"
+    elif min_dist < -0.05:
+        return "🔴 趨勢偏弱"
+    else:
+        return "⚪ 中立/觀察"
+
+def calculate_quality_score(financials_data: Any) -> float:
+    """Calculate Growth & Quality: ROE and revenue growth."""
+    try:
+        if isinstance(financials_data, dict):
+            # Formatted from DataProvider
+            pl = financials_data.get('income_statement', {})
+            bs = financials_data.get('balance_sheet', {})
+            net_income = float(pl.get('net_income', 0))
+            equity = float(bs.get('total_equity', 0))
+            roe = (net_income / equity) if equity > 0 else 0.0
+            return min(1.0, max(0.0, roe / 0.15))
+        elif isinstance(financials_data, list):
+            # Raw list format fallback
+            df = pd.DataFrame(financials_data)
+            if df.empty:
+                return 0.0
+            net_income_df = df[df['type'] == 'IncomeAfterTaxes'].sort_values('date', ascending=False)
+            equity_df = df[df['type'] == 'EquityAttributableToOwnersOfParent'].sort_values('date', ascending=False)
+            if net_income_df.empty or equity_df.empty:
+                return 0.0
+            current_ni = net_income_df.iloc[0]['value']
+            current_equity = equity_df.iloc[0]['value']
+            roe = (current_ni / current_equity) if current_equity > 0 else 0.0
+            return min(1.0, max(0.0, float(roe / 0.15)))
+    except Exception:
+        pass
+    return 0.0
+
+def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
+    """
+    Executes full screener rank analysis across all collected stocks.
+    Saves and returns the ranking report.
+    """
+    state = state_manager or StateManager()
+    market_index = state.get_market_index()
+    health_status = state.get_health_status()
+
+    # Load market index history
+    df_market = pd.DataFrame(market_index.get('history', []))
+    market_close = None
+    if not df_market.empty and 'close' in df_market.columns:
+        df_market['close'] = pd.to_numeric(df_market['close'], errors='coerce')
+        df_market = df_market.dropna(subset=['close'])
+        market_close = df_market['close'].values
+
+    stock_files = state.list_stock_files()
+    if not stock_files:
+        logger.warning("No data files found for ranking.")
+        return {"data": [], "last_update_time": datetime.now().strftime('%Y-%m-%d')}
+
+    logger.info(f"Starting Rank Analysis for {len(stock_files)} stocks...")
+    all_stocks = []
+
+    for idx, ticker in enumerate(stock_files, 1):
+        try:
+            data = state.get_stock_data(ticker)
+            if 'ticker' not in data or 'prices' not in data:
+                continue
+
+            name = data.get('name', 'Unknown')
+            df_prices = pd.DataFrame(data['prices'])
+            if df_prices.empty or 'close' not in df_prices.columns:
+                continue
+
+            df_prices['close'] = pd.to_numeric(df_prices['close'], errors='coerce')
+            df_prices = df_prices.dropna(subset=['close'])
+            if len(df_prices) < 20:
+                continue
+
+            current_price = df_prices['close'].iloc[-1]
+            prices_close = df_prices['close'].values
+
+            m_val = calculate_momentum_score(current_price, prices_close, market_close)
+            t_val, is_strict_trend = calculate_trend_score(df_prices)
+            q_val = calculate_quality_score(data.get('financials', {}))
+            entry_signal = calculate_entry_signal(df_prices)
+            is_gvw_strict = is_strict_trend and q_val > 0.3
+
+            is_dead = health_status.get(ticker, {}).get('status') == 'dead'
+            sync_date = data.get('updated_at', '1900-01-01T00:00:00') if not is_dead else None
+
+            all_stocks.append({
+                'ticker': ticker,
+                'name': name,
+                'm_val': m_val,
+                't_val': t_val,
+                'q_val': q_val,
+                'entry_signal': entry_signal,
+                'is_gvw_strict': is_gvw_strict,
+                'sync_date': sync_date,
+                'roe': data.get('basic_info', {}).get('roe', 0),
+                'pb': data.get('basic_info', {}).get('pb', 0),
+                'pe': data.get('basic_info', {}).get('pe', 0),
+                'yield': data.get('basic_info', {}).get('yield', 0)
+            })
+
+            if idx % 100 == 0 or idx == len(stock_files):
+                logger.info(f"Analysis Progress: {idx}/{len(stock_files)} stocks processed...")
+        except Exception as e:
+            logger.warning(f"Error processing stock {ticker}: {e}")
+
+    if not all_stocks:
+        logger.warning("No valid stock data for ranking.")
+        return {"data": [], "last_update_time": datetime.now().strftime('%Y-%m-%d')}
+
+    df_results = pd.DataFrame(all_stocks)
+    df_results['m_rank'] = df_results['m_val'].rank(pct=True)
+    df_results['q_rank'] = df_results['q_val'].rank(pct=True)
+    df_results['t_score'] = df_results['t_val']
+
+    # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
+    df_results['final_score'] = (
+        (df_results['m_rank'] * 0.4) +
+        (df_results['t_score'] * 0.3) +
+        (df_results['q_rank'] * 0.3)
+    )
+
+    valid_dates = df_results['sync_date'].dropna()
+    global_oldest_date = str(min(valid_dates)) if not valid_dates.empty else None
+
+    full_results = df_results[[
+        'ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_score', 'q_rank', 'is_gvw_strict'
+    ]].sort_values('final_score', ascending=False).to_dict('records')
+
+    result_output = {
+        'data': full_results,
+        'earliest_data_date': global_oldest_date,
+        'last_update_time': datetime.now().strftime('%Y-%m-%d')
+    }
+
+    state.save_ranks(result_output)
+    logger.info(f"✅ Rank analysis complete. Saved {len(full_results)} stocks.")
+    return result_output

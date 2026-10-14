@@ -1,11 +1,32 @@
+# Data & Cache
 data/
 *.json
-.env
 __pycache__/
-test_*.py
+*.py[cod]
+
+# Environment & Credentials
+.env
+gvw_bot/.env
+gvw_bot/favorites.db
+
+# Test & Run Scripts
+/test_*.py
 run_*.sh
 run_collector.py
 gvw*_cron.py
-gvw_bot/favorites.db
-gvw_bot/*.pyc
-gvw_bot/.env
+
+# Logs
+*.log
+logs/*.log
+!logs/.gitkeep
+run_log.txt
+
+# Backup & Intermediate Files
+*.bak
+*.new
+*.patch
+*.orig
+*~
+
+# Local Development / Agent Simulation Dirs
+.hermes/
