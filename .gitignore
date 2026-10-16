@@ -30,3 +30,6 @@ run_log.txt
 
 # Local Development / Agent Simulation Dirs
 .hermes/
+scoring_results.db
+src/dashboard/venv/
+src/dashboard/venv

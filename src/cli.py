@@ -1,160 +1,222 @@
-import argparse
-import sys
+import asyncio # Testing edit
 import logging
-from src.state.state_manager import StateManager
-from src.providers.factory import DataProviderFactory
-from src.core.orchestrator import Orchestrator
-from src.analysis.ranker import run_ranking
-from src.analysis.intraday import run_intraday_monitoring
-from src.reporting.report_engine import generate_daily_report
-from src.reporting.telegram_notifier import send_telegram_message
+import sys
+import argparse
+from src.providers.yahoo_adapter import YahooAdapter
+from src.analysis.engine_impl import GVWEngineImpl
+from src.orchestrator import Orchestrator
+from src.persistence.sqlite_repository import SQLiteRepository
+from src.analysis.backtest.engine_impl import SQLiteBacktestEngine
+from src.analysis.optimization.grid_search_impl import GridSearchOptimizer
 
-logger = logging.getLogger("gvw")
+async def run_backtest_command(args):
+    """Runs the backtest engine."""
+    logger = logging.getLogger("Backtest")
+    repository = SQLiteRepository(db_path=args.db)
+    await repository.connect()
+    
+    engine = SQLiteBacktestEngine(db_path=args.db)
+    
+    logger.info(f"Starting backtest from {args.start_date} to {args.end_date}...")
+    results = await engine.run_backtest(args.start_date, args.end_date)
+    
+    print("\n--- Backtest Results ---")
+    print(f"Sample Size:    {results.get('sample_size')}")
+    print(f"Win Rate:       {results.get('win_rate'):.2%}")
+    print(f"Sharpe Ratio:   {results.get('sharpe_ratio'):.2f}")
+    print(f"Max Drawdown:   {results.get('max_drawdown'):.2%}")
+    print(f"Total Return:   {results.get('total_return'):.2%}")
+    print("------------------------\n")
+    
+    await repository.close()
 
-def setup_logging(verbose: bool = False):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+async def run_optimize_command(args):
+    """Runs the optimization process."""
+    logger = logging.getLogger("Optimization")
+    repository = SQLiteRepository(db_path=args.db)
+    await repository.connect()
+
+    # Define optimization parameters
+    weight_price_range = [0.1, 0.3, 0.5, 0.7, 0.9]
+    weight_volume_range = [0.1, 0.3, 0.5, 0.7, 0.9]
+
+    optimizer = GridSearchOptimizer(
+        db_path=args.db,
+        weight_price_range=weight_price_range,
+        weight_volume_range=weight_volume_range
     )
 
-def cmd_collect(args):
-    orchestrator = Orchestrator()
-    stats = orchestrator.run_collection_cycle(batch_ratio=args.batch_ratio, force=args.force)
-    print(f"\nCollection cycle finished: {stats}")
+    # Use the provided dates
+    start_date = args.start_date
+    end_date = args.end_date
 
-def cmd_rank(args):
-    result = run_ranking()
-    count = len(result.get('data', []))
-    print(f"\nRanking finished: {count} stocks evaluated.")
-
-def cmd_report(args):
-    report_text = generate_daily_report()
-    print("\n" + report_text)
-    if args.send:
-        success = send_telegram_message(report_text)
-        print(f"Telegram notification: {'Sent ✅' if success else 'Failed / Not Configured ❌'}")
-
-def cmd_monitor(args):
-    alerts = run_intraday_monitoring()
-    if alerts:
-        print(f"\nFound {len(alerts)} alerts:")
-        for a in alerts:
-            print("----------------")
-            print(a)
-            if args.send:
-                send_telegram_message(a)
+    logger.info(f"Starting optimization from {start_date} to {end_date}...")
+    
+    # We'll pass a dummy list of dicts with dates to satisfy the interface
+    historical_data = [{"timestamp": start_date}, {"timestamp": end_date}]
+    
+    results = await optimizer.optimize(historical_data)
+    
+    if "error" in results:
+        print(f"Optimization failed: {results['error']}")
     else:
-        print("\n✅ No new intraday signals detected.")
+        print("\n--- Optimization Results ---")
+        print(f"Optimal Weight Price: {results['optimal_params'].get('weight_price')}")
+        print(f"Optimal Weight Volume: {results['optimal_params'].get('weight_volume')}")
+        print(f"Best Sharpe Ratio:    {results['best_metrics'].get('sharpe_ratio'):.2f}")
+        print(f"Best Total Return:    {results['best_metrics'].get('total_return'):.2%}")
+        print("----------------------------\n")
 
-def cmd_pipeline(args):
-    print("=== Step 1: Data Collection ===")
-    orchestrator = Orchestrator()
-    orchestrator.run_collection_cycle(batch_ratio=args.batch_ratio, force=args.force)
+    await repository.close()
 
-    print("\n=== Step 2: Ranking Analysis ===")
-    run_ranking()
-
-    print("\n=== Step 3: Daily Report ===")
-    report_text = generate_daily_report()
-    print(report_text)
-    if args.send:
-        send_telegram_message(report_text)
-
-def cmd_bot(args):
-    from gvw_bot.heartbeat import HeartbeatManager
-    if args.status:
-        hb = HeartbeatManager()
-        status = hb.check_health()
-        print(f"\nGVW Bot Service Status:")
-        print(f"  Healthy: {'✅ Yes' if status.get('healthy') else '❌ No'}")
-        if status.get('reason'):
-            print(f"  Reason: {status.get('reason')}")
-        if status.get('data'):
-            d = status['data']
-            print(f"  PID: {d.get('pid')}")
-            print(f"  Last Heartbeat: {d.get('last_heartbeat')}")
-            print(f"  Uptime: {d.get('uptime_seconds', 0)}s")
-            print(f"  Jobs: {d.get('jobs')}")
-    else:
-        from gvw_bot.main import main as run_bot
-        run_bot()
-
-def cmd_tools(args):
-    if args.tool_name == "force-update":
-        orchestrator = Orchestrator()
-        orchestrator.force_update_prices()
-    elif args.tool_name == "verify-token":
-        factory = DataProviderFactory()
-        res = factory.finmind.validate_token()
-        print("\nFinMind Token Status:")
-        for k, v in res.items():
-            print(f"  {k}: {v}")
-    elif args.tool_name == "check-health":
-        factory = DataProviderFactory()
-        health = factory.check_availability()
-        print("\nProvider Connectivity:")
-        for k, v in health.items():
-            print(f"  {k}: {'UP ✅' if v else 'DOWN ❌'}")
-    else:
-        print(f"Unknown tool: {args.tool_name}")
-
-def main():
-    parser = argparse.ArgumentParser(description="GVW Screener - Taiwan Stock Screener & Real-Time Monitor")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
+async def main():
+    parser = argparse.ArgumentParser(description="GVW Screener CLI")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--db", type=str, default="scoring_results.db", help="Path to SQLite database")
+    
+    # Add subcommands
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Screen command
+    screen_parser = subparsers.add_parser("screen", help="Run the screening process")
+    screen_parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"], 
+                               help="List of symbols to screen")
 
-    # collect
-    p_collect = subparsers.add_parser("collect", help="Run data collection cycle")
-    p_collect.add_argument("--batch-ratio", type=float, default=0.1, help="Ratio of universe to update (default: 0.1)")
-    p_collect.add_argument("--force", action="store_true", help="Force update even if TTL not expired")
+    # Backtest command
+    backtest_parser = subparsers.add_parser("backtest", help="Run the backtesting engine")
+    backtest_parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
+    backtest_parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
 
-    # rank
-    subparsers.add_parser("rank", help="Run ranking algorithm")
-
-    # report
-    p_report = subparsers.add_parser("report", help="Generate daily market report")
-    p_report.add_argument("--send", action="store_true", help="Send report to Telegram channel")
-
-    # monitor
-    p_monitor = subparsers.add_parser("monitor", help="Run intraday monitoring for top stocks")
-    p_monitor.add_argument("--send", action="store_true", help="Send alerts to Telegram channel")
-
-    # pipeline
-    p_pipe = subparsers.add_parser("pipeline", help="Run full pipeline: collect -> rank -> report")
-    p_pipe.add_argument("--batch-ratio", type=float, default=0.1, help="Ratio of universe to update")
-    p_pipe.add_argument("--force", action="store_true", help="Force update data")
-    p_pipe.add_argument("--send", action="store_true", help="Send final report to Telegram")
-
-    # bot
-    p_bot = subparsers.add_parser("bot", help="Run GVW Bot & Autonomous Scheduler Service daemon")
-    p_bot.add_argument("--status", action="store_true", help="Check status of running GVW Bot daemon")
-
-    # tools
-    p_tools = subparsers.add_parser("tools", help="Utility tools")
-    p_tools.add_argument("tool_name", choices=["force-update", "verify-token", "check-health"], help="Tool to run")
-
+    # Optimize command
+    optimize_parser = subparsers.add_parser("optimize", help="Run the parameter optimization")
+    optimize_parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
+    optimize_parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
+    
     args = parser.parse_args()
-    setup_logging(args.verbose)
 
-    if args.command == "collect":
-        cmd_collect(args)
-    elif args.command == "rank":
-        cmd_rank(args)
-    elif args.command == "report":
-        cmd_report(args)
-    elif args.command == "monitor":
-        cmd_monitor(args)
-    elif args.command == "pipeline":
-        cmd_pipeline(args)
-    elif args.command == "bot":
-        cmd_bot(args)
-    elif args.command == "tools":
-        cmd_tools(args)
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO if not args.verbose else logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger("CLI")
+
+    if args.command == "backtest":
+        await run_backtest_command(args)
+    elif args.command == "optimize":
+        await run_optimize_command(args)
+    elif args.command == "screen":
+        # 1. Initialize the chosen Adapter
+        adapter = YahooAdapter()
+        
+        # 2. Initialize the GVW Engine
+        engine = GVWEngineImpl(strategy_params={"weight_price": 0.6, "weight_volume": 0.4})
+
+        # 3. Initialize the SQLite Repository
+        repository = SQLiteRepository(db_path=args.db)
+        await repository.connect()
+        
+        # 4. Initialize the Orchestrator
+        orchestrator = Orchestrator(data_provider=adapter, engine=engine, repository=repository)
+
+        try:
+            # 5. Start the process
+            await orchestrator.run(args.symbols)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user.")
+        finally:
+            # 6. Cleanup
+            await orchestrator.close()
+            await repository.close()
     else:
         parser.print_help()
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)
 
+async def run_backtest_command(args):
+    """Runs the backtest engine."""
+    logger = logging.getLogger("Backtest")
+    repository = SQLiteRepository(db_path=args.db)
+    await repository.connect()
+    
+    engine = SQLiteBacktestEngine(db_path=args.db)
+    
+    logger.info(f"Starting backtest from {args.start_date} to {args.end_date}...")
+    results = await engine.run_backtest(args.start_date, args.end_date)
+    
+    print("\n--- Backtest Results ---")
+    print(f"Sample Size:    {results.get('sample_size')}")
+    print(f"Win Rate:       {results.get('win_rate'):.2%}")
+    print(f"Sharpe Ratio:   {results.get('sharpe_ratio'):.2f}")
+    print(f"Max Drawdown:   {results.get('max_drawdown'):.2%}")
+    print(f"Total Return:   {results.get('total_return'):.2%}")
+    print("------------------------\n")
+    
+    await repository.close()
+
+async def main():
+    parser = argparse.ArgumentParser(description="GVW Screener CLI")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--db", type=str, default="scoring_results.db", help="Path to SQLite database")
+    
+    # Add subcommands
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Screen command
+    screen_parser = subparsers.add_parser("screen", help="Run the screening process")
+    screen_parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"], 
+                               help="List of symbols to screen")
+
+    # Backtest command
+    backtest_parser = subparsers.add_parser("backtest", help="Run the backtesting engine")
+    backtest_parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
+    backtest_parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
+    
+    args = parser.parse_args()
+
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO if not args.verbose else logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger("CLI")
+
+    if args.command == "backtest":
+        await run_backtest_command(args)
+    elif args.command == "screen":
+        # 1. Initialize the chosen Adapter
+        adapter = YahooAdapter()
+        
+        # 2. Initialize the GVW Engine
+        engine = GVWEngineImpl(strategy_params={"weight_price": 0.6, "weight_volume": 0.4})
+
+        # 3. Initialize the SQLite Repository
+        repository = SQLiteRepository(db_path=args.db)
+        await repository.connect()
+        
+        # 4. Initialize the Orchestrator
+        orchestrator = Orchestrator(data_provider=adapter, engine=engine, repository=repository)
+
+        try:
+            # 5. Start the process
+            await orchestrator.run(args.symbols)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user.")
+        finally:
+            # 6. Cleanup
+            await orchestrator.close()
+            await repository.close()
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)

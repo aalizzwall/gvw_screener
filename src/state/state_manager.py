@@ -3,19 +3,20 @@ import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from src.state.interfaces import IStateRepository
 from src.config import (
     DATA_DIR,
     HEALTH_STATUS_FILE,
     UNIVERSE_FILE,
     RESULT_FILE,
     MARKET_INDEX_FILE,
-    POINTER_FILE
 )
 
 logger = logging.getLogger(__name__)
 
-class StateManager:
+class StateManager(IStateRepository):
     """
+    FileSystem implementation of IStateRepository.
     Manages application state, including stock data persistence,
     universe mapping, health tracking, and rankings.
     """
@@ -66,7 +67,7 @@ class StateManager:
         path = os.path.join(self.data_dir, f"{ticker}.json")
         self._save_json(path, data)
 
-    def list_stock_files(self) -> List[str]:
+    def list_stock_tickers(self) -> List[str]:
         if not os.path.exists(self.data_dir):
             return []
         return [f[:-5] for f in os.listdir(self.data_dir) if f.endswith('.json')]
@@ -74,7 +75,6 @@ class StateManager:
     def get_universe(self) -> Dict[str, str]:
         data = self._load_json_safe(self.universe_file, {})
         if isinstance(data, list):
-            # Convert list of tickers or dicts to map
             res = {}
             for item in data:
                 if isinstance(item, dict):

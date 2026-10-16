@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
@@ -46,7 +46,7 @@ def calculate_momentum_score(current_price: float, prices_close: np.ndarray, mar
 
     return abs_momentum
 
-def calculate_trend_score(prices_df: pd.DataFrame) -> (float, bool):
+def calculate_trend_score(prices_df: pd.DataFrame) -> Tuple[float, bool]:
     """
     Calculate Trend Score based on GVW / Stage 2 Analysis logic.
     - Stage 2: Price > MA150 > MA200, MA200 slope up, price near 52-week high.
@@ -162,7 +162,7 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
         df_market = df_market.dropna(subset=['close'])
         market_close = df_market['close'].values
 
-    stock_files = state.list_stock_files()
+    stock_files = state.list_stock_tickers()
     if not stock_files:
         logger.warning("No data files found for ranking.")
         return {"data": [], "last_update_time": datetime.now().strftime('%Y-%m-%d')}

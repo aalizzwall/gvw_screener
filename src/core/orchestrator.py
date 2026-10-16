@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
+from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
 from src.config import (
     TTL_HIGH_SCORE,
     TTL_MID_SCORE,
@@ -23,34 +24,20 @@ class Orchestrator:
     def __init__(
         self,
         state_manager: Optional[StateManager] = None,
-        provider_factory: Optional[DataProviderFactory] = None
+        provider_factory: Optional[DataProviderFactory] = None,
+        scoring_strategy: Optional[ScoringStrategy] = None,
+        repository: Optional[DataRepository] = None
     ):
         self.state = state_manager or StateManager()
         self.factory = provider_factory or DataProviderFactory()
+        self.scoring_strategy = scoring_strategy or DefaultScoringStrategy()
+        self.repository = repository
 
     def calculate_quality_score(self, pl_data: Dict[str, Any], bs_data: Dict[str, Any]) -> float:
         """
-        Calculates quality score based on revenue growth, net margin, and debt ratio.
+        Delegates quality score calculation to the configured strategy.
         """
-        try:
-            rev_curr = float(pl_data.get('revenue', 0) or pl_data.get('營業收入', 0))
-            rev_growth = 0.2 if rev_curr > 0 else 0 
-            net_income = float(pl_data.get('net_income', 0) or pl_data.get('本期淨利', 0))
-            margin = (net_income / rev_curr) if rev_curr > 0 else 0
-            
-            total_assets = float(bs_data.get('total_assets', 0) or bs_data.get('資產總額', 0))
-            total_liab = float(bs_data.get('total_liabilities', 0) or bs_data.get('負債總額', 0))
-            debt_ratio = (total_liab / total_assets) if total_assets > 0 else 1.0
-
-            s_growth = min(1.0, max(0.0, (rev_growth - 0.1) / 0.3))
-            s_margin = min(1.0, max(0.0, (margin - 0.05) / 0.15))
-            s_stable = min(1.0, max(0.0, (0.6 - debt_ratio) / 0.3))
-
-            final_q = (s_growth * 0.5) + (s_margin * 0.3) + (s_stable * 0.2)
-            return round(final_q, 3)
-        except Exception as e:
-            logger.warning(f"Quality score calc error: {e}")
-            return 0.5
+        return self.scoring_strategy.calculate_score(pl_data, bs_data)
 
     def update_market_index(self):
         """
@@ -126,10 +113,20 @@ class Orchestrator:
 
             existing_data['score'] = new_score
             existing_data['updated_at'] = datetime.now().isoformat()
-            self.state.save_stock_data(ticker, existing_data)
-
-            # Reset health failure count
-            self.state.update_stock_health(ticker, {'failures': 0, 'status': 'active'})
+            # Save result to persistence layer
+            if self.repository:
+                try:
+                    await self.repository.save_result({
+                        "ticker": ticker,
+                        "score": new_score,
+                        "timestamp": existing_data['updated_at'],
+                        "metadata": {
+                            "name": name,
+                            "force_update": force
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to persist score for {ticker}: {e}")
             logger.info(f"✅ {ticker} - Data updated (Quality Score: {new_score}).")
             return "SUCCESS"
         else:
@@ -201,7 +198,7 @@ class Orchestrator:
         Forces update of price history for all or specified stocks.
         """
         universe_map = self.state.get_universe()
-        target_tickers = tickers or list(universe_map.keys()) or self.state.list_stock_files()
+        target_tickers = tickers or list(universe_map.keys()) or self.state.list_stock_tickers()
         logger.info(f"🚀 Starting price force update for {len(target_tickers)} stocks...")
         count = 0
 
