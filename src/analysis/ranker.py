@@ -183,6 +183,8 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
 
             df_prices['close'] = pd.to_numeric(df_prices['close'], errors='coerce')
             df_prices = df_prices.dropna(subset=['close'])
+            if 'date' in df_prices.columns:
+                df_prices = df_prices.sort_values('date')
             if len(df_prices) < 20:
                 continue
 
@@ -197,6 +199,11 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
 
             is_dead = health_status.get(ticker, {}).get('status') == 'dead'
             sync_date = data.get('updated_at', '1900-01-01T00:00:00') if not is_dead else None
+            price_data_as_of = None
+            if 'date' in df_prices.columns:
+                latest_price_date = pd.to_datetime(df_prices['date'], errors='coerce').max()
+                if pd.notna(latest_price_date):
+                    price_data_as_of = latest_price_date.strftime('%Y-%m-%d')
 
             all_stocks.append({
                 'ticker': ticker,
@@ -207,6 +214,11 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
                 'entry_signal': entry_signal,
                 'is_gvw_strict': is_gvw_strict,
                 'sync_date': sync_date,
+                'price_data_as_of': price_data_as_of,
+                'price_data_source': data.get(
+                    'price_data_source',
+                    df_prices.iloc[-1].get('source', 'unknown'),
+                ),
                 'roe': data.get('basic_info', {}).get('roe', 0),
                 'pb': data.get('basic_info', {}).get('pb', 0),
                 'pe': data.get('basic_info', {}).get('pe', 0),

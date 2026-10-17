@@ -68,7 +68,15 @@ gvw_screener/
 | **盤後數據採集** | `14:00` | 自動調用 `Orchestrator` 採集全市場收盤與最新財務資料 |
 | **全局評分排名** | `15:00` | 運算全市場最新動能 RS、趨勢與品質分 |
 | **盤後篩選日報** | `15:30` | 彙整當日篩選結果推播至 Telegram 頻道 |
-| **背景快取同步** | 每 120 分鐘 (全天候) | 輪詢更新 10% 最舊資料，確保快取鮮度 |
+| **背景快取同步** | 每 60 分鐘 (全天候) | 輪詢更新 10% 最舊資料，確保快取鮮度 |
+
+### 資料來源與新鮮度
+
+- 基本面依序使用 TWSE、FinMind、Yahoo Finance；日線價格依序使用 FinMind、Yahoo Finance。
+- 適配器只會回報可用資料；無資料、格式錯誤或無效價格會觸發下一來源，不會以模擬價格代替。
+- 價格資料與基本面分開記錄來源及更新狀態。價格每小時到期後可獨立重抓，不會因基本面 TTL 尚未到期而跳過。
+- Telegram 報表只標示「資料截止至」實際納入排名的最舊行情日期；日期缺失時顯示「未知」，不以報表產生時間代替。
+- Raspberry Pi 安裝請執行 `pip install -r requirements.txt`；其中包含 Yahoo adapter 非同步串流所需的 `aiohttp`。
 
 ### Hermes-Agent 監控接縫 (Health Monitoring)
 `hermes-agent` 僅需監控 `gvw_bot` 服務的存活與心跳：
@@ -193,4 +201,3 @@ systemctl --user enable --now gvw_bot
 # 3. 檢查運行日誌
 journalctl --user -u gvw_bot -f
 ```
-

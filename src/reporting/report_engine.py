@@ -58,21 +58,23 @@ def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
     """Generate the full daily markdown/HTML report."""
     state = state_manager or StateManager()
 
-    # 1. System Heartbeat
-    market_index = state.get_market_index()
-    sync_health = market_index.get('updated_at', '未知')
-
-    # 2. Load Rank Data
+    # Load rank data and identify the oldest source date used in these results.
     report_data = state.get_ranks()
     all_data = report_data.get('data', [])
+    data_dates = [row.get('price_data_as_of') for row in all_data]
+    data_cutoff = (
+        min(data_dates)
+        if data_dates and all(isinstance(date, str) and date for date in data_dates)
+        else '未知'
+    )
 
     if not all_data:
-        return "📡 系統同步正常，但目前篩選名單為空。"
+        return "📅 <b>資料截止至</b>: <code>未知</code>\n目前沒有可用的排名資料。\n"
 
     # 3. Strong Buy Signals (K-Line Verified)
     strong_signals = get_strong_buy_signals(state_manager=state)
     lines = [
-        f"📡 <b>系統最後同步時間</b>: <code>{sync_health}</code>\n",
+        f"📅 <b>資料截止至</b>: <code>{data_cutoff}</code>\n",
         "🚨 <b>強烈買入訊號 (K-line Verified)</b>\n"
     ]
 
@@ -117,4 +119,3 @@ def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
             lines.append(f"{i}. {row.get('name', t)} ({t}) | 區間: {price_range}\n")
 
     return "".join(lines)
-

@@ -9,11 +9,11 @@ from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
 from src.config import (
     TTL_HIGH_SCORE,
     TTL_MID_SCORE,
-    TTL_LOW_SCORE,
-    MAX_CONSECUTIVE_FAILURES
+    TTL_LOW_SCORE
 )
 
 logger = logging.getLogger(__name__)
+PRICE_TTL_HOURS = 1
 
 class Orchestrator:
     """
@@ -36,6 +36,27 @@ class Orchestrator:
         Delegates quality score calculation to the configured strategy.
         """
         return self.scoring_strategy.calculate_score(pl_data, bs_data)
+
+    @staticmethod
+    def _apply_price_history(data: Dict[str, Any], prices: List[Dict[str, Any]]) -> None:
+        data["prices"] = prices
+        data["price_data_as_of"] = max(str(row["date"]) for row in prices)
+        data["price_data_updated_at"] = datetime.now().isoformat()
+        data["price_data_source"] = prices[-1].get("source", "unknown")
+
+    @staticmethod
+    def _parse_timestamp(timestamp: str) -> datetime:
+        try:
+            updated_at = datetime.fromisoformat(timestamp)
+        except (TypeError, ValueError):
+            updated_at = datetime(1900, 1, 1)
+        if updated_at.tzinfo is not None:
+            updated_at = updated_at.astimezone().replace(tzinfo=None)
+        return updated_at
+
+    @classmethod
+    def _is_expired(cls, timestamp: str, ttl_hours: int) -> bool:
+        return cls._parse_timestamp(timestamp) + timedelta(hours=ttl_hours) < datetime.now()
 
     def update_market_index(self):
         """
@@ -69,57 +90,104 @@ class Orchestrator:
         existing_data = self.state.get_stock_data(ticker)
         health = (health_status or self.state.get_health_status()).get(ticker, {})
 
-        if health.get('status') == 'dead':
-            logger.info(f"⏭️  Skipping {ticker}: permanently dead")
+        retry_after = health.get("retry_after")
+        if not force and retry_after and self._parse_timestamp(retry_after) > datetime.now():
+            logger.info("⏭️  Skipping %s until provider retry time %s.", ticker, retry_after)
             return "SKIP"
 
         ttl_hours = TTL_HIGH_SCORE if score > 0.9 else (TTL_MID_SCORE if score > 0.6 else TTL_LOW_SCORE)
         updated_at_str = existing_data.get('updated_at', '1900-01-01T00:00:00')
-        try:
-            updated_at = datetime.fromisoformat(updated_at_str)
-        except Exception:
-            updated_at = datetime(1900, 1, 1)
+        financials_due = force or self._is_expired(
+            existing_data.get('financial_data_updated_at', updated_at_str), ttl_hours
+        )
+        prices_due = force or self._is_expired(
+            existing_data.get('price_data_updated_at', updated_at_str), PRICE_TTL_HOURS
+        )
 
-        needs_update = True if force else (updated_at + timedelta(hours=ttl_hours) < datetime.now())
-
-        if not needs_update:
+        if not financials_due and not prices_due:
             logger.info(f"⏱️  {ticker}: TTL not expired.")
             return "SKIP"
 
         logger.info(f"[TRACK] Fetching data for {ticker} ({name})...")
-        new_data = self.factory.fetch_all_data(ticker)
+        new_data = self.factory.fetch_all_data(ticker) if financials_due else None
+        prices = self.factory.fetch_price_history(ticker, days=365) if prices_due else []
+        now = datetime.now().isoformat()
+        financials_updated = bool(financials_due and new_data and not new_data.get('error'))
+        prices_updated = bool(prices_due and prices)
+        financials_ok = not financials_due or financials_updated
+        prices_ok = not prices_due or prices_updated
+        existing_data.setdefault('financial_data_updated_at', updated_at_str)
+        existing_data.setdefault('price_data_updated_at', updated_at_str)
 
-        if new_data and not new_data.get('error'):
+        if financials_updated:
             existing_data['ticker'] = ticker
             if name:
                 existing_data['name'] = name
             existing_data['financials'] = new_data.get('financials', {})
             existing_data['basic_info'] = new_data.get('basic_info', {})
+            existing_data['financial_data_source'] = new_data.get('source', 'unknown')
+            existing_data['financial_data_updated_at'] = new_data.get('updated_at', now)
             if 'shareholders' in new_data:
                 existing_data['shareholders'] = new_data.get('shareholders', [])
 
-            # Preserve or fetch prices if empty
-            if 'prices' not in existing_data or not existing_data['prices']:
-                prices = self.factory.fetch_price_history(ticker, days=365)
-                if prices:
-                    existing_data['prices'] = prices
+        if prices_updated:
+            existing_data['ticker'] = ticker
+            self._apply_price_history(existing_data, prices)
 
-            # Calculate Quality Score
+        existing_data["last_refresh_attempt_at"] = now
+        existing_data["last_refresh_status"] = (
+            "success" if financials_ok and prices_ok
+            else "partial" if financials_updated or prices_updated
+            else "failed"
+        )
+        existing_data["provider_status"] = {
+            "financials": (
+                "updated" if financials_updated else "failed" if financials_due else "not_due"
+            ),
+            "prices": "updated" if prices_updated else "failed" if prices_due else "not_due",
+        }
+
+        if financials_updated:
             pl = existing_data.get('financials', {}).get('income_statement', {})
             bs = existing_data.get('financials', {}).get('balance_sheet', {})
-            new_score = self.calculate_quality_score(pl, bs)
+            existing_data['score'] = self.calculate_quality_score(pl, bs)
 
-            existing_data['score'] = new_score
-            existing_data['updated_at'] = datetime.now().isoformat()
-            logger.info(f"✅ {ticker} - Data updated (Quality Score: {new_score}).")
-            return "SUCCESS"
-        else:
-            # Handle failure
+        if financials_ok and prices_ok:
+            existing_data['updated_at'] = now
+            self.state.update_stock_health(
+                ticker, {'failures': 0, 'status': 'healthy', 'retry_after': None}
+            )
+            logger.info("✅ %s - Due data refreshed successfully.", ticker)
+            result = "SUCCESS"
+        elif financials_updated or prices_updated:
+            existing_data['updated_at'] = now
             current_failures = health.get('failures', 0) + 1
-            status = 'dead' if current_failures >= MAX_CONSECUTIVE_FAILURES else 'degraded'
-            self.state.update_stock_health(ticker, {'failures': current_failures, 'status': status})
-            logger.warning(f"❌ {ticker} - Provider failed to return data (Failures: {current_failures}).")
-            return "FAIL"
+            self.state.update_stock_health(
+                ticker, {
+                    'failures': current_failures,
+                    'status': 'degraded',
+                    'retry_after': None,
+                }
+            )
+            logger.warning(
+                "⚠️ %s - Partial refresh; financials=%s, prices=%s.",
+                ticker, financials_updated, prices_updated,
+            )
+            result = "PARTIAL"
+        else:
+            current_failures = health.get('failures', 0) + 1
+            backoff_hours = min(2 ** min(current_failures - 1, 5), 24)
+            retry_after = (datetime.now() + timedelta(hours=backoff_hours)).isoformat()
+            self.state.update_stock_health(ticker, {
+                'failures': current_failures,
+                'status': 'degraded',
+                'retry_after': retry_after,
+            })
+            logger.warning("❌ %s - All data providers failed (Failures: %s).", ticker, current_failures)
+            result = "FAIL"
+
+        self.state.save_stock_data(ticker, existing_data)
+        return result
 
     def run_collection_cycle(self, batch_ratio: float = 0.1, force: bool = False) -> Dict[str, int]:
         """
@@ -142,7 +210,11 @@ class Orchestrator:
         for t in universe_map:
             stock_data = self.state.get_stock_data(t)
             updated_at = stock_data.get('updated_at', '1900-01-01T00:00:00')
-            all_stocks.append((t, updated_at))
+            oldest_update = min(
+                self._parse_timestamp(stock_data.get('financial_data_updated_at', updated_at)),
+                self._parse_timestamp(stock_data.get('price_data_updated_at', updated_at)),
+            )
+            all_stocks.append((t, oldest_update))
 
         all_stocks.sort(key=lambda x: x[1])
         num_to_update = math.ceil(len(all_stocks) * batch_ratio)
@@ -151,8 +223,10 @@ class Orchestrator:
         for t, _ in all_stocks:
             if len(target_batch) >= num_to_update:
                 break
-            if health_status.get(t, {}).get('status') != 'dead':
-                target_batch.append(t)
+            retry_after = health_status.get(t, {}).get('retry_after')
+            if retry_after and self._parse_timestamp(retry_after) > datetime.now():
+                continue
+            target_batch.append(t)
 
         if not target_batch:
             logger.info("No active stocks available to update.")
@@ -164,7 +238,7 @@ class Orchestrator:
             name = universe_map.get(ticker, "")
             score = rank_map.get(ticker, 0)
             result = self.update_stock(ticker, name=name, score=score, health_status=health_status, force=force)
-            if result == "SUCCESS":
+            if result in ("SUCCESS", "PARTIAL"):
                 stats['fetches'] += 1
             elif result == "FAIL":
                 stats['failures'] += 1
@@ -191,8 +265,10 @@ class Orchestrator:
             prices = self.factory.fetch_price_history(ticker, days=365)
             if prices:
                 data['ticker'] = ticker
-                data['prices'] = prices
-                data['updated_at'] = datetime.now().isoformat()
+                self._apply_price_history(data, prices)
+                data['last_refresh_attempt_at'] = datetime.now().isoformat()
+                data['last_refresh_status'] = 'price_only'
+                data.setdefault('provider_status', {})['prices'] = 'updated'
                 self.state.save_stock_data(ticker, data)
                 count += 1
                 logger.info(f"✅ {ticker} prices updated ({len(prices)} bars).")

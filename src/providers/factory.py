@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Any, List, Optional
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.finmind_adapter import FinMindAdapter
@@ -22,34 +23,69 @@ class DataProviderFactory:
         self.finmind = finmind_adapter or FinMindAdapter()
         self.yahoo = yahoo_adapter or YahooAdapter()
 
+    @staticmethod
+    def _has_stock_data(data: Any) -> bool:
+        if not isinstance(data, dict) or data.get("error"):
+            return False
+
+        def has_numeric_value(value: Any) -> bool:
+            if isinstance(value, dict):
+                return any(has_numeric_value(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(has_numeric_value(item) for item in value)
+            if isinstance(value, (int, float)):
+                return math.isfinite(value) and value != 0
+            if isinstance(value, str):
+                try:
+                    number = float(value.replace(",", "").strip())
+                    return math.isfinite(number) and number != 0
+                except ValueError:
+                    return False
+            return False
+
+        if has_numeric_value(data.get("financials", {})):
+            return True
+        basic_info = data.get("basic_info", {})
+        return isinstance(basic_info, dict) and any(
+            has_numeric_value(basic_info.get(key))
+            for key in ("roe", "pb", "pe", "yield", "price", "close")
+        )
+
+    @staticmethod
+    def _valid_price_history(prices: Any, source: str) -> List[Dict[str, Any]]:
+        if not isinstance(prices, list):
+            return []
+
+        valid = []
+        for item in prices:
+            if not isinstance(item, dict) or not item.get("date"):
+                continue
+            try:
+                close = float(item.get("close"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(close) or close <= 0:
+                continue
+            valid.append({**item, "close": close, "source": item.get("source") or source})
+        return sorted(valid, key=lambda item: str(item["date"]))
+
     def fetch_all_data(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
         Attempts to fetch fundamental/financial data across available providers.
         """
-        # 1. Try TWSE
-        try:
-            data = self.twse.fetch_stock_data(ticker)
-            if data and not data.get('error'):
-                return data
-        except Exception as e:
-            logger.warning(f"[FACTORY] TWSE failed for {ticker}: {e}")
-
-        # 2. Try FinMind
-        if self.finmind:
+        providers = (
+            ("TWSE", self.twse),
+            ("FinMind", self.finmind),
+            ("Yahoo Finance", self.yahoo),
+        )
+        for name, provider in providers:
             try:
-                data = self.finmind.fetch_stock_data(ticker)
-                if data and not data.get('error') and data.get('financials'):
+                data = provider.fetch_stock_data(ticker)
+                if self._has_stock_data(data):
                     return data
+                logger.warning("[FACTORY] %s returned no usable stock data for %s", name, ticker)
             except Exception as e:
-                logger.warning(f"[FACTORY] FinMind failed for {ticker}: {e}")
-
-        # 3. Fallback to Yahoo Finance
-        try:
-            data = self.yahoo.fetch_stock_data(ticker)
-            if data and not data.get('error'):
-                return data
-        except Exception as e:
-            logger.error(f"[FACTORY] Yahoo failed for {ticker}: {e}")
+                logger.warning("[FACTORY] %s failed for %s: %s", name, ticker, e)
 
         return None
 
@@ -58,36 +94,17 @@ class DataProviderFactory:
         Fetch historical price/K-line data.
         Tries FinMind first, falls back to Yahoo Finance.
         """
-        # 1. Try FinMind
-        try:
-            prices = self.finmind.fetch_price_history(ticker, days=days)
-            if prices:
-                return prices
-        except Exception as e:
-            logger.warning(f"[FACTORY] FinMind price history failed for {ticker}: {e}")
-
-        # 2. Fallback to Yahoo Finance
-        try:
-            import yfinance as yf
-            import pandas as pd
-            symbol = f"{ticker}.TW" if ticker.isdigit() else ticker
-            df = yf.Ticker(symbol).history(period=f"{days}d", interval="1d")
-            if df is not None and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                return [
-                    {
-                        'date': date.strftime('%Y-%m-%d'),
-                        'open': float(row['Open']),
-                        'high': float(row['High']),
-                        'low': float(row['Low']),
-                        'close': float(row['Close']),
-                        'volume': int(row['Volume'])
-                    }
-                    for date, row in df.iterrows()
-                ]
-        except Exception as e:
-            logger.error(f"[FACTORY] Yahoo price history failed for {ticker}: {e}")
+        for name, provider in (("FinMind", self.finmind), ("Yahoo Finance", self.yahoo)):
+            try:
+                prices = self._valid_price_history(
+                    provider.fetch_price_history(ticker, days=days),
+                    "finmind" if name == "FinMind" else "yahoo_finance",
+                )
+                if prices:
+                    return prices
+                logger.warning("[FACTORY] %s returned no usable prices for %s", name, ticker)
+            except Exception as e:
+                logger.warning("[FACTORY] %s price history failed for %s: %s", name, ticker, e)
 
         return []
 
@@ -130,4 +147,3 @@ class DataProviderFactory:
             "finmind": self.finmind.check_availability(),
             "yahoo": self.yahoo.check_availability()
         }
-

@@ -1,98 +1,185 @@
-import logging
 import asyncio
+import logging
+import math
+from datetime import datetime, timezone
+from typing import Any, AsyncIterable, Dict, List, Optional
+
 import aiohttp
-from datetime import datetime
-from typing import Dict, Any, Optional, AsyncIterable
+
 from src.interfaces.data_provider import DataProvider
 
+
 class YahooAdapter(DataProvider):
-    """
-    Adapter for Yahoo Finance using the yfinance library.
-    Upgraded to support asynchronous streaming for Raspberry Pi efficiency.
-    """
+    """Fetch real stock data from Yahoo Finance."""
+
+    CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('[YAHOO_ADAPTER] %(asctime)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
-        self._session: aiohttp.ClientSession | None = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
+    @staticmethod
+    def _symbols(ticker: str) -> List[str]:
+        if ticker.isdigit():
+            return [f"{ticker}.TW", f"{ticker}.TWO"]
+        return [ticker]
+
+    @staticmethod
+    def _number(value: Any) -> float:
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def fetch_price_history(self, ticker: str, days: int = 365) -> List[Dict[str, Any]]:
+        import yfinance as yf
+
+        for symbol in self._symbols(ticker):
+            try:
+                history = yf.Ticker(symbol).history(
+                    period=f"{max(days, 1)}d",
+                    interval="1d",
+                    auto_adjust=False,
+                )
+            except Exception as exc:
+                self.logger.warning("Yahoo price history failed for %s: %s", symbol, exc)
+                continue
+
+            if history is None or history.empty:
+                continue
+
+            prices = []
+            for date, row in history.iterrows():
+                close = self._number(row.get("Close"))
+                if close <= 0:
+                    continue
+                prices.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "open": self._number(row.get("Open")),
+                    "high": self._number(row.get("High")),
+                    "low": self._number(row.get("Low")),
+                    "close": close,
+                    "volume": int(self._number(row.get("Volume"))),
+                    "source": "yahoo_finance",
+                })
+
+            if prices:
+                return sorted(prices, key=lambda item: item["date"])
+        return []
+
+    def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
+        import yfinance as yf
+
+        for symbol in self._symbols(ticker):
+            try:
+                info = yf.Ticker(symbol).info
+            except Exception as exc:
+                self.logger.warning("Yahoo stock data failed for %s: %s", symbol, exc)
+                continue
+
+            if not isinstance(info, dict) or not any(
+                info.get(key) for key in ("longName", "shortName", "totalRevenue", "trailingEps")
+            ):
+                continue
+
+            dividend_yield = self._number(info.get("dividendYield")) * 100
+            return {
+                "ticker": ticker,
+                "source": "yahoo_finance",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "basic_info": {
+                    "name": info.get("longName") or info.get("shortName", ""),
+                    "industry": info.get("industry", ""),
+                    "market_type": info.get("quoteType", ""),
+                    "pe": self._number(info.get("trailingPE")),
+                    "pb": self._number(info.get("priceToBook")),
+                    "yield": round(dividend_yield, 4),
+                    "roe": round(self._number(info.get("returnOnEquity")) * 100, 2),
+                },
+                "financials": {
+                    "income_statement": {
+                        "revenue": self._number(info.get("totalRevenue")),
+                        "net_income": self._number(info.get("netIncomeToCommon")),
+                        "gross_profit": self._number(info.get("grossProfits")),
+                        "operating_income": self._number(info.get("operatingIncome")),
+                        "operating_expenses": self._number(info.get("operatingExpenses")),
+                        "eps": self._number(info.get("trailingEps")),
+                    },
+                    "balance_sheet": {
+                        "total_assets": self._number(info.get("totalAssets")),
+                        "total_liabilities": self._number(info.get("totalLiabilities")),
+                        "total_equity": self._number(info.get("totalStockholderEquity")),
+                    },
+                },
+                "shareholders": [],
+            }
+
+        return {"ticker": ticker, "source": "yahoo_finance", "error": "No usable Yahoo Finance data"}
 
     async def stream_market_data(self, symbols: list[str]) -> AsyncIterable[Dict[str, Any]]:
-        """
-        Yields market data in batches to minimize memory footprint on Pi.
-        """
-        session = await self._get_session()
-        batch_size = min(len(symbols), 5)
-
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i : i + batch_size]
-            try:
-                data_list = await self._fetch_batch(session, batch)
-                for item in data_list:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for start in range(0, len(symbols), 5):
+                for item in await self._fetch_batch(session, symbols[start:start + 5]):
                     yield item
-            except Exception as e:
-                self.logger.error(f"Error in batch {batch}: {e}")
-                break
+
+    async def _fetch_batch(
+        self,
+        session: aiohttp.ClientSession,
+        batch: list[str],
+    ) -> List[Dict[str, Any]]:
+        async def fetch_latest(symbol: str) -> Optional[Dict[str, Any]]:
+            try:
+                async with session.get(
+                    self.CHART_URL.format(symbol=symbol),
+                    params={"range": "5d", "interval": "1d"},
+                ) as response:
+                    response.raise_for_status()
+                    payload = await response.json()
+                result = payload.get("chart", {}).get("result")
+                if not result:
+                    return None
+                chart = result[0]
+                timestamps = chart.get("timestamp") or []
+                closes = chart.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                for timestamp, close in reversed(list(zip(timestamps, closes))):
+                    price = self._number(close)
+                    if price > 0:
+                        return {
+                            "symbol": symbol,
+                            "price": price,
+                            "timestamp": datetime.fromtimestamp(
+                                timestamp, tz=timezone.utc
+                            ).isoformat(),
+                            "source": "yahoo_finance",
+                        }
+                return None
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, IndexError) as exc:
+                self.logger.warning("Yahoo market data failed for %s: %s", symbol, exc)
+                return None
+
+        return [item for item in await asyncio.gather(*(fetch_latest(s) for s in batch)) if item]
 
     async def stream_stock_data(self, ticker: str) -> AsyncIterable[Dict[str, Any]]:
-        """
-        Asynchronous stream for a single ticker.
-        """
-        session = await self._get_session()
-        for _ in range(3):  # Simulation limit
-            try:
-                data = await self._fetch_batch(session, [ticker])
-                for item in data:
-                    yield item
-                await asyncio.sleep(1)
-            except Exception as e:
-                self.logger.error(f"Error fetching {ticker}: {e}")
-                break
+        data = await asyncio.to_thread(self.fetch_stock_data, ticker)
+        if not data.get("error"):
+            yield data
 
-    async def _fetch_batch(self, session: aiohttp.ClientSession, batch: list[str]) -> list[Dict[str, Any]]:
-        """
-        Simulates fetching and normalizing data.
-        In real usage, this would call yfinance or a direct API.
-        """
-        await asyncio.sleep(0.5)
-        return [{"symbol": s, "price": 150.0, "timestamp": datetime.now().isoformat()} 
-                for s in batch]
+    def fetch_market_index(self, index_ticker: str) -> Dict[str, Any]:
+        prices = self.fetch_price_history(index_ticker, days=5)
+        if not prices:
+            return {}
+        latest = prices[-1]
+        return {
+            "ticker": index_ticker,
+            "price": latest["close"],
+            "updated_at": latest["date"],
+            "source": latest["source"],
+        }
 
-    async def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
-        """
-        Sync wrapper for the async stream (for backward compatibility).
-        """
+    def check_availability(self) -> bool:
         try:
-            # Note: In a real async app, this should be awaited
-            # Since this is a sync method, we use a temporary loop
-            loop = asyncio.get_event_loop()
-            gen = self.stream_stock_data(ticker)
-            
-            async def get_first():
-                async for item in gen:
-                    return item
-                return {}
-            
-            return loop.run_until_complete(get_first())
-        except Exception as e:
-            self.logger.error(f"Sync fetch error: {e}")
-            return {"ticker": ticker, "error": str(e)}
-
-    async def fetch_market_index(self, index_ticker: str) -> Dict[str, Any]:
-        return await self.fetch_stock_data(index_ticker)
-
-    async def check_availability(self) -> bool:
-        return True
-
-    async def close(self):
-        if self._session:
-            await self._session.close()
+            return bool(self.fetch_price_history("^TWII", days=5))
+        except Exception as exc:
+            self.logger.warning("Yahoo availability check failed: %s", exc)
+            return False

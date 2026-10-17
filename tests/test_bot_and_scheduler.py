@@ -45,7 +45,8 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("daily_collection", job_names)
         self.assertIn("daily_ranking", job_names)
         self.assertIn("daily_report", job_names)
+        periodic_sync = next(job for job in scheduler.jobs if job.name == "periodic_sync")
+        self.assertEqual(periodic_sync.interval_minutes, 60)
 
 if __name__ == "__main__":
     unittest.main()
-

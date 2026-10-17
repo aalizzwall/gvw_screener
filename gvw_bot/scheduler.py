@@ -121,11 +121,11 @@ class GVWScheduler:
             weekdays_only=True
         ))
 
-        # 6. Periodic Oldest-First Sync: Every 120 minutes (always running)
+        # 6. Periodic Oldest-First Sync: Every 60 minutes (always running)
         self.jobs.append(ScheduledJob(
             name="periodic_sync",
             func=self.job_periodic_sync,
-            interval_minutes=120,
+            interval_minutes=60,
             weekdays_only=False
         ))
 
@@ -208,4 +208,3 @@ class GVWScheduler:
                     self.hb.update_job_status(job.name, "error", message=str(e))
 
             time.sleep(10)
-
