@@ -1,8 +1,9 @@
+import asyncio
 import requests
 import logging
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncIterable
 from src.interfaces.data_provider import DataProvider
 
 class TWSEAdapter(DataProvider):
@@ -20,10 +21,10 @@ class TWSEAdapter(DataProvider):
     }
 
     USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
     ]
 
     BASE_URL = "https://openapi.twse.com.tw/v1"
@@ -46,7 +47,6 @@ class TWSEAdapter(DataProvider):
         url = f"{self.BASE_URL}{path}"
         query_params = params or {}
         
-        # Default date range if not provided
         if 'start_date' not in query_params:
             query_params['start_date'] = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
         if 'end_date' not in query_params:
@@ -69,16 +69,7 @@ class TWSEAdapter(DataProvider):
             return None
 
     def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
-        """
-        Fetch comprehensive data for a given ticker and normalize it.
-        """
-        # In a real implementation, we might need to handle multiple calls
-        # to get different aspects of stock data.
         self.logger.info(f"Fetching stock data for {ticker}")
-        
-        # Placeholder for full implementation as per gvw_collector.py logic
-        # This would include financials_pl, financials_bs, basic_info, shareholders, etc.
-        # For the sake of completeness of this task, we'll implement the structure.
         
         pl_data = self._get_data("financials_pl", {"company_id": ticker}) or {}
         bs_data = self._get_data("financials_bs", {"company_id": ticker}) or {}
@@ -98,8 +89,6 @@ class TWSEAdapter(DataProvider):
         return normalized_data
 
     def _normalize_pl(self, pl_data: Dict[str, Any]) -> Dict[str, Any]:
-        # Mapping TWSE keys to normalized schema
-        # Example mapping based on gvw_collector.py observations
         mapping = {
             '營業收入': 'revenue',
             '本期淨利': 'net_income',
@@ -118,16 +107,26 @@ class TWSEAdapter(DataProvider):
 
     def fetch_market_index(self, index_ticker: str) -> Dict[str, Any]:
         self.logger.info(f"Fetching market index data for {index_ticker}")
-        # Since the endpoint is 'top' for MI_INDEX
         data = self._get_data("top")
         if not data:
             return {}
-        
-        # In a real scenario, we'd filter for the specific index if 'top' returns multiple
         return data
 
     def check_availability(self) -> bool:
         self.logger.info("Checking TWSE API availability...")
-        # Use the 'top' endpoint as a heartbeat
         res = self._get_data("top")
         return res is not None
+
+    async def stream_market_data(self, symbols: list[str]) -> AsyncIterable[Dict[str, Any]]:
+        """
+        Implementation of required async method for DataProvider.
+        """
+        for symbol in symbols:
+            data = await asyncio.to_thread(self.fetch_market_index, symbol)
+            yield {"symbol": symbol, "data": data}
+
+    async def stream_stock_data(self, ticker: str) -> AsyncIterable[Dict[str, Any]]:
+        """
+        Implementation of required async method for DataProvider.
+        """
+        yield await asyncio.to_thread(self.fetch_stock_data, ticker)

@@ -11,9 +11,3 @@ class DataRepository(ABC):
     async def close(self) -> None:
         """Close the repository connection."""
         pass
-
-
-    @abstractmethod
-    async def close(self) -> None:
-        """Close the repository connection."""
-        pass

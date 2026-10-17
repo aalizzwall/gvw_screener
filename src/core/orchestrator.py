@@ -25,13 +25,11 @@ class Orchestrator:
         self,
         state_manager: Optional[StateManager] = None,
         provider_factory: Optional[DataProviderFactory] = None,
-        scoring_strategy: Optional[ScoringStrategy] = None,
-        repository: Optional[DataRepository] = None
+        scoring_strategy: Optional[ScoringStrategy] = None
     ):
         self.state = state_manager or StateManager()
         self.factory = provider_factory or DataProviderFactory()
         self.scoring_strategy = scoring_strategy or DefaultScoringStrategy()
-        self.repository = repository
 
     def calculate_quality_score(self, pl_data: Dict[str, Any], bs_data: Dict[str, Any]) -> float:
         """
@@ -113,20 +111,6 @@ class Orchestrator:
 
             existing_data['score'] = new_score
             existing_data['updated_at'] = datetime.now().isoformat()
-            # Save result to persistence layer
-            if self.repository:
-                try:
-                    await self.repository.save_result({
-                        "ticker": ticker,
-                        "score": new_score,
-                        "timestamp": existing_data['updated_at'],
-                        "metadata": {
-                            "name": name,
-                            "force_update": force
-                        }
-                    })
-                except Exception as e:
-                    logger.error(f"Failed to persist score for {ticker}: {e}")
             logger.info(f"✅ {ticker} - Data updated (Quality Score: {new_score}).")
             return "SUCCESS"
         else:
@@ -217,4 +201,3 @@ class Orchestrator:
 
         logger.info(f"✨ Price update complete: {count}/{len(target_tickers)} stocks updated.")
         return count
-
