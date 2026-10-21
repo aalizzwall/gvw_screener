@@ -1,4 +1,5 @@
 import asyncio
+import time
 import requests
 import logging
 import math
@@ -78,11 +79,14 @@ class TWSEAdapter(DataProvider):
         now = time.time()
         if TWSEAdapter._valuation_cache is not None and (now - TWSEAdapter._valuation_cache_time < 3600):
             return TWSEAdapter._valuation_cache
-        data = self._get_data("valuation")
-        if isinstance(data, list):
-            TWSEAdapter._valuation_cache = data
-            TWSEAdapter._valuation_cache_time = now
-            return data
+        try:
+            data = self._get_data("valuation")
+            if isinstance(data, list):
+                TWSEAdapter._valuation_cache = data
+                TWSEAdapter._valuation_cache_time = now
+                return data
+        except Exception as e:
+            self.logger.debug(f"Could not load valuation data: {e}")
         return []
 
     @staticmethod

@@ -273,3 +273,4 @@ class MaintenanceAgent:
             messages.append({"role": "user", "content": f"Observation from {action}:\n{tool_str}\n\n請根據以上真實觀測結果繼續分析。若資訊已足夠，請回傳 final_answer。"})
 
         return "⚠️ 已達到最大工具調用深度，未能完成診斷，請嘗試縮小問題範圍。"
+

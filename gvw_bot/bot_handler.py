@@ -768,6 +768,7 @@ class TelegramBotHandler:
                         text.startswith("/")
                         or text in MENU_BUTTONS
                         or self.pending_analysis_chats.get(chat_id) == str(user_id or "")
+                        or chat_id in self.maintenance_mode_chats
                     ):
                         command = text.split()[0] if text.startswith("/") else text
                         self.handle_command(
