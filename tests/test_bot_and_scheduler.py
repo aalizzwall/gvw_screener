@@ -684,12 +684,12 @@ class TestBotAndScheduler(unittest.TestCase):
                 scheduler.job_intraday_monitor()
 
             calls = mock_send.call_args_list
+            # 盤中監控不得推播至預設頻道，僅推播給有開啟盤中監控的使用者
             home_calls = [c for c in calls if "chat_id" not in c.kwargs or c.kwargs["chat_id"] is None]
-            self.assertEqual(len(home_calls), 1)
+            self.assertEqual(len(home_calls), 0)
 
             sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}
-            self.assertIn("100", sub_targets)
-            self.assertIn("200", sub_targets)
+            self.assertEqual(sub_targets, {"100", "200"})
 
 if __name__ == "__main__":
     unittest.main()
