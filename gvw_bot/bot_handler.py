@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 import requests
 
 # Ensure parent directory is in sys.path
@@ -31,7 +31,7 @@ class TelegramBotHandler:
         self.last_update_id = 0
         self.running = False
 
-    def send_message(self, chat_id: int | str, text: str, parse_mode: str = "HTML") -> bool:
+    def send_message(self, chat_id: Union[int, str], text: str, parse_mode: str = "HTML") -> bool:
         if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
@@ -47,7 +47,7 @@ class TelegramBotHandler:
             logger.error(f"Error sending telegram message: {e}")
             return False
 
-    def handle_command(self, chat_id: int | str, command: str, text: str):
+    def handle_command(self, chat_id: Union[int, str], command: str, text: str):
         cmd = command.lower().strip()
         logger.info(f"Received Telegram command: {cmd} from chat {chat_id}")
 
@@ -162,4 +162,3 @@ class TelegramBotHandler:
                 logger.error(f"Error in poll loop: {e}")
                 time.sleep(5)
             time.sleep(1)
-

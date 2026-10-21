@@ -67,4 +67,5 @@ jobs:
           systemctl --user daemon-reload
           systemctl --user enable gvw_bot
           systemctl --user restart gvw_bot
+          sleep 5
           systemctl --user is-active --quiet gvw_bot

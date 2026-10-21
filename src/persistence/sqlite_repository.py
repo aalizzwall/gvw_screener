@@ -1,7 +1,7 @@
 import aiosqlite
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from src.interfaces.repository import DataRepository
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class SQLiteRepository(DataRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._conn: aiosqlite.Connection | None = None
+        self._conn: Optional[aiosqlite.Connection] = None
 
     async def connect(self) -> None:
         try:
@@ -64,4 +64,3 @@ class SQLiteRepository(DataRepository):
         if self._conn:
             await self._conn.close()
             self._conn = None
-

@@ -6,6 +6,10 @@ from gvw_bot.scheduler import GVWScheduler, ScheduledJob
 
 class TestBotAndScheduler(unittest.TestCase):
 
+    def test_startup_modules_import(self):
+        import gvw_bot.bot_handler
+        import src.persistence.sqlite_repository
+
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")
         self.hb = HeartbeatManager(heartbeat_file=self.test_hb_file)
