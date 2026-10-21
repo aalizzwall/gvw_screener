@@ -147,8 +147,7 @@ class TelegramBotHandler:
             return False
 
     def _keyboard_for_chat(self, chat_id: Union[int, str]) -> Dict[str, Any]:
-        if self.owner_user_id and str(chat_id) == self.owner_user_id:
-            return REPLY_KEYBOARD
+        # Both Owner and regular users see the same clean keyboard buttons
         return PUBLIC_REPLY_KEYBOARD
 
     def handle_command(
@@ -786,30 +785,47 @@ class TelegramBotHandler:
         if not self.token:
             return
 
-        public_commands = [
-            command for command in BOT_COMMANDS
-            if command["command"] in {"analyze", "request_ai"}
-        ]
-        response = requests.post(
-            f"https://api.telegram.org/bot{self.token}/setMyCommands",
-            json={"commands": public_commands},
-            timeout=20,
-        )
-        response.raise_for_status()
-        if not response.json().get("ok"):
-            raise RuntimeError("Telegram rejected bot command registration")
-        if self.owner_user_id:
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.token}/setMyCommands",
-                json={
-                    "commands": BOT_COMMANDS,
-                    "scope": {"type": "chat", "chat_id": int(self.owner_user_id)},
-                },
+        # 1. Clear / delete commands for regular users (public default scope has NO menu)
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{self.token}/deleteMyCommands",
+                json={"scope": {"type": "default"}},
                 timeout=20,
             )
-            response.raise_for_status()
-            if not response.json().get("ok"):
-                raise RuntimeError("Telegram rejected owner command registration")
+            requests.post(
+                f"https://api.telegram.org/bot{self.token}/setChatMenuButton",
+                json={"menu_button": {"type": "default"}},
+                timeout=20,
+            )
+        except Exception as e:
+            logger.warning(f"Could not clear public commands menu: {e}")
+
+        # 2. Register full command menu exclusively for Owner chat
+        if self.owner_user_id:
+            try:
+                owner_id_int = int(self.owner_user_id)
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.token}/setMyCommands",
+                    json={
+                        "commands": BOT_COMMANDS,
+                        "scope": {"type": "chat", "chat_id": owner_id_int},
+                    },
+                    timeout=20,
+                )
+                response.raise_for_status()
+                if not response.json().get("ok"):
+                    raise RuntimeError("Telegram rejected owner command registration")
+
+                requests.post(
+                    f"https://api.telegram.org/bot{self.token}/setChatMenuButton",
+                    json={
+                        "chat_id": owner_id_int,
+                        "menu_button": {"type": "commands"},
+                    },
+                    timeout=20,
+                )
+            except Exception as e:
+                logger.error(f"Failed to register owner menu: {e}")
 
     def run_polling_loop(self):
         self.running = True
