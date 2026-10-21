@@ -297,7 +297,7 @@ class TestBotAndScheduler(unittest.TestCase):
             self.assertIn("已開啟盤中監控", bot.send_message.call_args.args[1])
 
             # 2. Toggle OFF via button text
-            bot.handle_command(123, "🔔 盤中監控 (on)", "🔔 盤中監控 (on)", user_id=123)
+            bot.handle_command(123, "🔔 盤中監控", "🔔 盤中監控", user_id=123)
             self.assertFalse(store.is_subscribed(123))
             self.assertIn("已關閉盤中監控", bot.send_message.call_args.args[1])
 
@@ -315,7 +315,7 @@ class TestBotAndScheduler(unittest.TestCase):
             # Unapproved regular user (not subscribed)
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
-                ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+                ["🏆 Top 10 選股", "🔕 盤中監控"],
                 ["📝 申請 AI 分析"],
             ])
 
@@ -323,7 +323,7 @@ class TestBotAndScheduler(unittest.TestCase):
             alert_store.subscribe(20)
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
-                ["🏆 Top 10 選股", "🔔 盤中監控 (on)"],
+                ["🏆 Top 10 選股", "🔔 盤中監控"],
                 ["📝 申請 AI 分析"],
             ])
 
@@ -332,14 +332,14 @@ class TestBotAndScheduler(unittest.TestCase):
             ai_store.decide(20, approved=True)
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
-                ["🏆 Top 10 選股", "🔔 盤中監控 (on)"],
+                ["🏆 Top 10 選股", "🔔 盤中監控"],
                 ["🤖 AI 個股分析"],
             ])
 
             # Owner
             kb = bot._keyboard_for_chat(10, user_id=10)
             self.assertEqual(kb["keyboard"], [
-                ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+                ["🏆 Top 10 選股", "🔕 盤中監控"],
                 ["🤖 AI 個股分析"],
             ])
 

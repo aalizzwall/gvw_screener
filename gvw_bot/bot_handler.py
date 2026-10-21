@@ -73,7 +73,7 @@ MENU_BUTTONS = {
 }
 REPLY_KEYBOARD = {
     "keyboard": [
-        ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+        ["🏆 Top 10 選股", "🔕 盤中監控"],
         ["🤖 AI 個股分析"],
     ],
     "resize_keyboard": True,
@@ -81,7 +81,7 @@ REPLY_KEYBOARD = {
 }
 PUBLIC_REPLY_KEYBOARD = {
     "keyboard": [
-        ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+        ["🏆 Top 10 選股", "🔕 盤中監控"],
         ["📝 申請 AI 分析"],
     ],
     "resize_keyboard": True,
@@ -161,7 +161,7 @@ class TelegramBotHandler:
     ) -> Dict[str, Any]:
         target_uid = user_id if user_id is not None else chat_id
         is_sub = self.alert_store.is_subscribed(chat_id)
-        monitor_btn = "🔔 盤中監控 (on)" if is_sub else "🔕 盤中監控 (off)"
+        monitor_btn = "🔔 盤中監控" if is_sub else "🔕 盤中監控"
         can_analyze = self._can_analyze(target_uid)
         ai_btn = "🤖 AI 個股分析" if can_analyze else "📝 申請 AI 分析"
 
@@ -206,7 +206,7 @@ class TelegramBotHandler:
                 "• 15:30 盤後篩選總結日報\n\n"
                 "<b>三大核心功能（可直接點擊下方鍵盤按鈕）：</b>\n"
                 "1. 🏆 <b>Top 10 選股</b>：隨時查看最新全市場 GVW Top 10 核心優質標的\n"
-                "2. 🔔 <b>盤中監控 (on/off)</b>：開啟或關閉推播，當 Top 30 核心標的同時通過「分時三步法」突破信號時主動通知\n"
+                "2. 🔔 <b>盤中監控</b> / 🔕 <b>盤中監控</b>：開啟或關閉推播，當 Top 30 核心標的同時通過「分時三步法」突破信號時主動通知\n"
                 "3. 🤖 <b>AI 個股分析</b> / 📝 <b>申請 AI 分析</b>：對個股進行基本面、動能與價量 AI 深度評估\n"
             )
             self.send_message(chat_id, msg, user_id=user_id)
