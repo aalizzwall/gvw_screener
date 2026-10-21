@@ -196,7 +196,8 @@ class TelegramBotHandler:
             for job in self.scheduler.jobs:
                 last = job.last_run.strftime('%m-%d %H:%M') if job.last_run else "尚未執行"
                 trigger_info = job.daily_time if job.daily_time else f"每 {job.interval_minutes} 分鐘"
-                lines.append(f"• <b>{job.name}</b>: {trigger_info} (最後執行: <code>{last}</code>)")
+                status_suffix = " (執行中 ⏳)" if getattr(job, "is_running", False) else ""
+                lines.append(f"• <b>{job.name}</b>: {trigger_info} (最後執行: <code>{last}</code>){status_suffix}")
             self.send_message(chat_id, "\n".join(lines))
 
         elif cmd == "/monitor":
