@@ -109,7 +109,7 @@ class TestGVWDoctor(unittest.TestCase):
                 f.write(f"Line {i}\n")
         # Artificially mock getsize to > 10MB
         with patch("os.path.getsize", return_value=12 * 1024 * 1024), \
-             patch("src.diagnostics.doctor.check_ai_provider_availability", return_value={"openai": {"ok": True}}):
+             patch("src.diagnostics.doctor.check_providers", return_value=[{"entry": "openai", "ok": True}]):
             actions = self.doctor.run_remediation()
             self.assertTrue(any("輪替過大日誌" in act for act in actions))
 
@@ -120,7 +120,7 @@ class TestGVWDoctor(unittest.TestCase):
         # Set mtime to 2 hours ago
         os.utime(lock_file, (time.time() - 7200, time.time() - 7200))
 
-        with patch("src.diagnostics.doctor.check_ai_provider_availability", return_value={}):
+        with patch("src.diagnostics.doctor.check_providers", return_value=[]):
             actions = self.doctor.run_remediation()
             self.assertTrue(any("清理" in act and "鎖檔" in act for act in actions))
             self.assertFalse(os.path.exists(lock_file))
@@ -293,3 +293,4 @@ class TestTelegramBotDoctorCommands(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

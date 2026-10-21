@@ -13,7 +13,7 @@ import requests
 
 from src.config import DATA_DIR, LOGS_DIR
 from src.state.ai_provider import AIProviderPreferenceStore
-from src.analysis.ai_analyst import check_ai_provider_availability
+from src.analysis.ai_analyst import check_providers
 
 logger = logging.getLogger("gvw.doctor")
 
@@ -214,14 +214,15 @@ class GVWDoctor:
         # 3. AI Providers
         try:
             chain = self.ai_provider_store.get_chain()
-            local_url = self.ai_provider_store.get_local_base_url()
             primary = chain[0] if chain else "none"
-            ai_status = check_ai_provider_availability(chain, local_base_url=local_url)
+            probe_results = check_providers(chain)
+            status_map = {res["entry"]: res for res in probe_results}
+            primary_ok = status_map.get(primary, {}).get("ok", False)
             results["ai"] = {
                 "primary": primary,
                 "chain": chain,
-                "details": ai_status,
-                "primary_ok": ai_status.get(primary, {}).get("ok", False) if primary in ai_status else False,
+                "details": status_map,
+                "primary_ok": primary_ok,
             }
         except Exception as e:
             results["ai"] = {"ok": False, "error": str(e)}
@@ -369,14 +370,14 @@ class GVWDoctor:
         # 4. Auto AI Failover
         try:
             chain = self.ai_provider_store.get_chain()
-            local_url = self.ai_provider_store.get_local_base_url()
             if chain:
                 primary = chain[0]
-                status_map = check_ai_provider_availability(chain, local_base_url=local_url)
+                probe_results = check_providers(chain)
+                status_map = {res["entry"]: res for res in probe_results}
                 primary_ok = status_map.get(primary, {}).get("ok", False)
                 if not primary_ok:
                     # Find first healthy entry
-                    healthy = [entry for entry in chain if status_map.get(entry, {}).get("ok")]
+                    healthy = [res["entry"] for res in probe_results if res.get("ok")]
                     if healthy:
                         new_primary = healthy[0]
                         new_chain = healthy + [entry for entry in chain if entry not in healthy]
@@ -442,3 +443,4 @@ class GVWDoctor:
         except Exception as e:
             logger.error(f"Error creating GitHub issue: {e}")
             raise
+
