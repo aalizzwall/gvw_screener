@@ -1,7 +1,9 @@
 import os
 import unittest
 from datetime import datetime
+from unittest.mock import Mock, patch
 from gvw_bot.heartbeat import HeartbeatManager
+from gvw_bot.bot_handler import REPLY_KEYBOARD, TelegramBotHandler
 from gvw_bot.scheduler import GVWScheduler, ScheduledJob
 
 class TestBotAndScheduler(unittest.TestCase):
@@ -9,6 +11,38 @@ class TestBotAndScheduler(unittest.TestCase):
     def test_startup_modules_import(self):
         import gvw_bot.bot_handler
         import src.persistence.sqlite_repository
+
+    def test_bot_sends_persistent_keyboard(self):
+        bot = TelegramBotHandler(token="test-token")
+        response = Mock(status_code=200)
+
+        with patch("gvw_bot.bot_handler.requests.post", return_value=response) as post:
+            self.assertTrue(bot.send_message(123, "Menu"))
+
+        self.assertEqual(post.call_args.kwargs["json"]["reply_markup"], REPLY_KEYBOARD)
+
+    def test_polling_routes_keyboard_button_text(self):
+        bot = TelegramBotHandler(token="test-token")
+        bot.handle_command = Mock()
+        response = Mock(
+            status_code=200,
+            json=lambda: {
+                "result": [{
+                    "update_id": 1,
+                    "message": {
+                        "text": "📊 選股報告 / Top 10",
+                        "chat": {"id": 123},
+                    },
+                }]
+            },
+        )
+
+        with patch("gvw_bot.bot_handler.requests.get", return_value=response):
+            bot.poll_once()
+
+        bot.handle_command.assert_called_once_with(
+            123, "📊 選股報告 / Top 10", "📊 選股報告 / Top 10"
+        )
 
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")

@@ -164,7 +164,7 @@ python main.py tools force-update   # 強制刷新全市場歷史價格
 
 ### 3. Telegram 互動指令
 
-在 Telegram 中與 Bot 互動時支援以下即時指令：
+Bot 提供常駐鍵盤按鈕與 Telegram 指令選單；也可直接輸入下列指令：
 * `/report`：立即產製並傳送最新篩選報告
 * `/status`：查詢 Bot 服務運行狀態、PID 與心跳
 * `/jobs`：查看內建排程各任務之最後執行時間與下次時間

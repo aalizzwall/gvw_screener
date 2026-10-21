@@ -19,6 +19,33 @@ from src.analysis.intraday import run_intraday_monitoring
 
 logger = logging.getLogger("gvw.bot")
 
+BOT_COMMANDS = [
+    {"command": "report", "description": "查看 GVW 選股報告與 Top 10"},
+    {"command": "status", "description": "查看服務狀態"},
+    {"command": "monitor", "description": "執行盤中信號掃描"},
+    {"command": "collect", "description": "手動採集股票資料"},
+    {"command": "rank", "description": "重新計算股票排名"},
+    {"command": "jobs", "description": "查看排程任務"},
+]
+MENU_BUTTONS = {
+    "📊 選股報告 / Top 10": "/report",
+    "🩺 系統狀態": "/status",
+    "🔍 盤中監控": "/monitor",
+    "📥 採集資料": "/collect",
+    "🏆 重新排名": "/rank",
+    "⏰ 排程任務": "/jobs",
+}
+REPLY_KEYBOARD = {
+    "keyboard": [
+        ["📊 選股報告 / Top 10", "🩺 系統狀態"],
+        ["🔍 盤中監控", "📥 採集資料"],
+        ["🏆 重新排名", "⏰ 排程任務"],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+
 class TelegramBotHandler:
     """
     Handles Telegram Bot commands and interactions via long polling.
@@ -38,7 +65,8 @@ class TelegramBotHandler:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": parse_mode
+            "parse_mode": parse_mode,
+            "reply_markup": REPLY_KEYBOARD,
         }
         try:
             r = requests.post(url, json=payload, timeout=20)
@@ -48,7 +76,7 @@ class TelegramBotHandler:
             return False
 
     def handle_command(self, chat_id: Union[int, str], command: str, text: str):
-        cmd = command.lower().strip()
+        cmd = MENU_BUTTONS.get(command.strip(), command.lower().strip())
         logger.info(f"Received Telegram command: {cmd} from chat {chat_id}")
 
         if cmd in ["/start", "/help"]:
@@ -146,14 +174,31 @@ class TelegramBotHandler:
                     chat = message.get("chat", {})
                     chat_id = chat.get("id")
 
-                    if text and chat_id and text.startswith("/"):
-                        command = text.split()[0]
+                    if text and chat_id and (text.startswith("/") or text in MENU_BUTTONS):
+                        command = text.split()[0] if text.startswith("/") else text
                         self.handle_command(chat_id, command, text)
         except Exception as e:
             logger.debug(f"Telegram polling error: {e}")
 
+    def register_commands(self):
+        if not self.token:
+            return
+
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.token}/setMyCommands",
+            json={"commands": BOT_COMMANDS},
+            timeout=20,
+        )
+        response.raise_for_status()
+        if not response.json().get("ok"):
+            raise RuntimeError("Telegram rejected bot command registration")
+
     def run_polling_loop(self):
         self.running = True
+        try:
+            self.register_commands()
+        except (requests.RequestException, ValueError, RuntimeError):
+            logger.exception("Failed to register Telegram bot commands.")
         logger.info("Telegram Bot polling started.")
         while self.running:
             try:
