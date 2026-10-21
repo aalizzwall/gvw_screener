@@ -55,7 +55,8 @@ class TestBotAndScheduler(unittest.TestCase):
         with patch("gvw_bot.bot_handler.requests.post", return_value=response) as post:
             self.assertTrue(bot.send_message(123, "Menu"))
 
-        self.assertEqual(post.call_args.kwargs["json"]["reply_markup"], REPLY_KEYBOARD)
+        # Owner receives same clean public keyboard as regular users
+        self.assertEqual(post.call_args.kwargs["json"]["reply_markup"], PUBLIC_REPLY_KEYBOARD)
 
     def test_command_menu_limits_system_commands_to_owner(self):
         bot = TelegramBotHandler(token="test-token", owner_user_id="123")
@@ -66,13 +67,14 @@ class TestBotAndScheduler(unittest.TestCase):
         with patch("gvw_bot.bot_handler.requests.post", return_value=response) as post:
             bot.register_commands()
 
-        self.assertEqual(post.call_count, 2)
-        public_payload = post.call_args_list[0].kwargs["json"]
-        owner_payload = post.call_args_list[1].kwargs["json"]
-        self.assertEqual(
-            [command["command"] for command in public_payload["commands"]],
-            ["analyze", "request_ai"],
-        )
+        calls = post.call_args_list
+        urls = [c.args[0] for c in calls]
+        # Public scope deletes commands and resets menu button
+        self.assertTrue(any("deleteMyCommands" in u for u in urls))
+        self.assertTrue(any("setChatMenuButton" in u for u in urls))
+        # Owner chat scope gets full BOT_COMMANDS
+        self.assertTrue(any("setMyCommands" in u for u in urls))
+        owner_payload = next(c.kwargs["json"] for c in calls if "setMyCommands" in c.args[0])
         self.assertEqual(owner_payload["scope"], {"type": "chat", "chat_id": 123})
         self.assertIn("collect", [command["command"] for command in owner_payload["commands"]])
 
