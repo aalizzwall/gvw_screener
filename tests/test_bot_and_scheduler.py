@@ -463,9 +463,9 @@ class TestBotAndScheduler(unittest.TestCase):
 
     def test_jobs_command_shows_status(self):
         scheduler = GVWScheduler(heartbeat_mgr=self.hb)
-        bot = TelegramBotHandler(token="test-token", scheduler=scheduler)
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10", scheduler=scheduler)
         bot.send_message = Mock()
-        bot.handle_command(123, "/jobs", "/jobs", user_id=123)
+        bot.handle_command(10, "/jobs", "/jobs", user_id=10)
         bot.send_message.assert_called_once()
         msg = bot.send_message.call_args.args[1]
         self.assertIn("intraday_monitor", msg)
