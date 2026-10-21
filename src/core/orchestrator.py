@@ -143,6 +143,11 @@ class Orchestrator:
         prices_updated = bool(prices_due and prices)
         financials_ok = not financials_due or financials_updated
         prices_ok = not prices_due or prices_updated
+        not_found_count = health.get('yahoo_not_found_count', 0)
+        if yahoo_not_found:
+            not_found_count = min(not_found_count + 1, YAHOO_NOT_FOUND_THRESHOLD)
+        elif prices_due:
+            not_found_count = 0
         existing_data.setdefault('financial_data_updated_at', updated_at_str)
         existing_data.setdefault('price_data_updated_at', updated_at_str)
 
@@ -186,7 +191,7 @@ class Orchestrator:
                     'failures': 0,
                     'status': 'healthy',
                     'retry_after': None,
-                    'yahoo_not_found_count': 0,
+                    'yahoo_not_found_count': not_found_count,
                 }
             )
             logger.info("✅ %s - Due data refreshed successfully.", ticker)
@@ -199,7 +204,7 @@ class Orchestrator:
                     'failures': current_failures,
                     'status': 'degraded',
                     'retry_after': None,
-                    'yahoo_not_found_count': 0,
+                    'yahoo_not_found_count': not_found_count,
                 }
             )
             logger.warning(
@@ -210,10 +215,6 @@ class Orchestrator:
         else:
             current_failures = health.get('failures', 0) + 1
             backoff_hours = min(2 ** min(current_failures - 1, 5), 24)
-            not_found_count = (
-                min(health.get('yahoo_not_found_count', 0) + 1, YAHOO_NOT_FOUND_THRESHOLD)
-                if yahoo_not_found else 0
-            )
             is_dead = not_found_count >= YAHOO_NOT_FOUND_THRESHOLD
             retry_after = (
                 None if is_dead
@@ -316,7 +317,11 @@ class Orchestrator:
 
         for ticker in target_tickers:
             data = self.state.get_stock_data(ticker)
-            prices = self.factory.fetch_price_history(ticker, days=365)
+            try:
+                prices = self.factory.fetch_price_history(ticker, days=365)
+            except TickerNotFoundError:
+                logger.warning("Skipping confirmed missing Yahoo ticker %s.", ticker)
+                continue
             if prices:
                 data['ticker'] = ticker
                 self._apply_price_history(data, prices)

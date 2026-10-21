@@ -155,6 +155,64 @@ class ProviderResilienceTests(unittest.TestCase):
         self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
         self.assertEqual(factory.stock_calls, 4)
 
+    def test_partial_financial_success_preserves_consecutive_yahoo_404_count(self):
+        stock_data = {
+            "source": "twse",
+            "financials": {"income_statement": {"revenue": 1}, "balance_sheet": {}},
+            "basic_info": {},
+        }
+
+        class PartiallyAvailableFactory(FakeFactory):
+            def __init__(self):
+                super().__init__(stock_data, [])
+                self.fetch_count = 0
+
+            def fetch_all_data(self, ticker):
+                self.stock_calls += 1
+                self.fetch_count += 1
+                return stock_data if self.fetch_count == 1 else None
+
+            def fetch_price_history(self, ticker, days=365):
+                self.price_calls += 1
+                raise TickerNotFoundError(ticker)
+
+        state = FakeState()
+        factory = PartiallyAvailableFactory()
+        orchestrator = Orchestrator(state_manager=state, provider_factory=factory)
+
+        self.assertEqual(
+            orchestrator.update_stock("6488", force=True, health_status=state.health),
+            "PARTIAL",
+        )
+        self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 1)
+        self.assertEqual(
+            orchestrator.update_stock("6488", force=True, health_status=state.health),
+            "FAIL",
+        )
+        self.assertEqual(
+            orchestrator.update_stock("6488", force=True, health_status=state.health),
+            "FAIL",
+        )
+        self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
+        self.assertEqual(state.health["6488"]["status"], "dead")
+
+    def test_force_price_update_continues_after_missing_ticker(self):
+        state = unittest.mock.Mock()
+        state.get_universe.return_value = {}
+        state.list_stock_tickers.return_value = ["6488", "2330"]
+        state.get_stock_data.return_value = {}
+        factory = unittest.mock.Mock()
+        factory.fetch_price_history.side_effect = [
+            TickerNotFoundError("6488"),
+            [{"date": "2026-10-16", "close": 100}],
+        ]
+        orchestrator = Orchestrator(state_manager=state, provider_factory=factory)
+
+        updated = orchestrator.force_update_prices()
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(factory.fetch_price_history.call_count, 2)
+
     def test_transient_collection_failures_do_not_mark_ticker_dead(self):
         state = FakeState()
         factory = FakeFactory(None, [])
