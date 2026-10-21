@@ -220,6 +220,8 @@ journalctl --user -u gvw_bot -f
 
 `.github/workflows/deploy.yml` 會在 Pull Request 上執行測試；推送至 `main` 且測試通過後，會將程式部署到 production runner、安裝依賴並重啟 `gvw_bot`。手動執行 workflow 也只會在 `main` 分支部署。
 
+Dependabot 每週檢查根目錄與 dashboard 的 Python 套件及 GitHub Actions，將各套件管理器的版本更新合併為單一 PR；安全漏洞更新仍由 GitHub Dependabot security updates 即時處理。
+
 一次性設定：
 
 1. 在 GitHub Repository 的 **Settings → Actions → Runners**，確認 runner 帶有 `self-hosted`、`Linux`、`ARM64` labels。runner 必須在部署主機上以 `pi` 使用者執行；workflow 會拒絕其他使用者。

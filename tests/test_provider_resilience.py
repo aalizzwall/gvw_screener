@@ -1,3 +1,4 @@
+import re
 import sys
 import unittest
 from datetime import datetime
@@ -492,6 +493,43 @@ class ProviderResilienceTests(unittest.TestCase):
             report = generate_daily_report(state_manager=state)
 
         self.assertIn("資料截止至</b>: <code>未知</code>", report)
+
+    def test_report_limits_each_candidate_section_to_ten_stocks(self):
+        from src.reporting.report_engine import generate_daily_report
+
+        candidates = [
+            {
+                "ticker": f"{1000 + index}",
+                "name": f"Stock {index}",
+                "final_score": 1 - index / 100,
+                "entry_signal": "🟢 回調買入區",
+                "is_gvw_strict": True,
+            }
+            for index in range(12)
+        ]
+        signals = [
+            {"name": row["name"], "ticker": row["ticker"], "score": row["final_score"]}
+            for row in candidates
+        ]
+        state = FakeState(ranks={"data": candidates})
+
+        with (
+            patch("src.reporting.report_engine.get_strong_buy_signals", return_value=signals),
+            patch("src.reporting.report_engine.get_suggested_price", return_value="N/A"),
+            patch("src.reporting.report_engine.get_financials", return_value={
+                "roe": 0, "pb": 0, "pe": 0, "yield": 0,
+            }),
+        ):
+            report = generate_daily_report(state_manager=state)
+
+        sections = [
+            report.split("強烈買入訊號", 1)[1].split("回調買入 Top 10", 1)[0],
+            report.split("回調買入 Top 10", 1)[1].split("GVW 嚴格對齊名單", 1)[0],
+            report.split("GVW 嚴格對齊名單", 1)[1],
+        ]
+        for section in sections:
+            numbered_rows = re.findall(r"(?m)^\d+\. ", section)
+            self.assertEqual(len(numbered_rows), 10)
 
 
 if __name__ == "__main__":

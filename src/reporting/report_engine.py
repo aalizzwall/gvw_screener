@@ -81,7 +81,7 @@ def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
     if not strong_signals:
         lines.append("目前無符合 K 線突破之標的，請耐心等待\n")
     else:
-        for i, sig in enumerate(strong_signals, 1):
+        for i, sig in enumerate(strong_signals[:10], 1):
             lines.append(f"{i}. {sig['name']} ({sig['ticker']}) - 得分: {sig['score']:.2f} | 狀態: 突破訊號確認!\n")
 
     # 4. Pullback Top 10
@@ -107,7 +107,9 @@ def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
 
     # 5. GVW Strict Candidates
     gvw_strict = [row for row in all_data if row.get('is_gvw_strict')]
-    gvw_strict_sorted = sorted(gvw_strict, key=lambda x: x.get('final_score', 0), reverse=True)
+    gvw_strict_sorted = sorted(
+        gvw_strict, key=lambda x: x.get('final_score', 0), reverse=True
+    )[:10]
 
     lines.append("\n💎 <b>GVW 嚴格對齊名單 (Strict)</b>\n")
     if not gvw_strict_sorted:
