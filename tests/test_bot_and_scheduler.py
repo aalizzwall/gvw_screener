@@ -365,6 +365,21 @@ class TestBotAndScheduler(unittest.TestCase):
         )
         self.assertIn("新主力", bot.send_message.call_args.args[1])
 
+    def test_owner_can_view_and_set_local_ai_endpoint(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+
+        bot.handle_command(10, "/ai_local", "/ai_local", user_id=10)
+        self.assertIn("地端 LM-Studio 端點", bot.send_message.call_args.args[1])
+        self.assertIn("目前設定", bot.send_message.call_args.args[1])
+
+        bot.handle_command(10, "/ai_local", "/ai_local http://192.168.1.100:1234/v1", user_id=10)
+        self.assertEqual(provider_store.get_local_base_url(), "http://192.168.1.100:1234/v1")
+        self.assertIn("已更新", bot.send_message.call_args.args[1])
+
+        bot.handle_command(20, "/ai_local", "/ai_local http://bad.com", user_id=20)
+        self.assertEqual(provider_store.get_local_base_url(), "http://192.168.1.100:1234/v1")
+        self.assertIn("僅限系統負責人", bot.send_message.call_args.args[1])
+
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")
         self.hb = HeartbeatManager(heartbeat_file=self.test_hb_file)

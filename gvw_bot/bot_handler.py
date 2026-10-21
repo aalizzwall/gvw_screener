@@ -43,6 +43,7 @@ BOT_COMMANDS = [
     {"command": "ai_add", "description": "加入 provider/model，可指定位置"},
     {"command": "ai_remove", "description": "移除 provider/model 或序號"},
     {"command": "ai_check", "description": "檢測可用性並將可用者排前面"},
+    {"command": "ai_local", "description": "查看或設定地端 LM-Studio 端點 URL"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -144,6 +145,7 @@ class TelegramBotHandler:
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
+            "/ai_local",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
@@ -261,6 +263,28 @@ class TelegramBotHandler:
             self.send_message(chat_id, "🩺 正在檢測 AI 模型可用性，請稍候...")
             self.send_message(chat_id, self._run_ai_check())
 
+        elif cmd == "/ai_local":
+            args = text.split()[1:]
+            if not args:
+                endpoint = self.ai_provider_store.get_local_base_url()
+                self.send_message(
+                    chat_id,
+                    f"🏠 <b>地端 LM-Studio 端點</b>\n\n"
+                    f"• 目前設定：<code>{html.escape(endpoint)}</code>\n\n"
+                    f"如需更換請輸入：<code>/ai_local &lt;URL&gt;</code>\n"
+                    f"例如：<code>/ai_local http://192.168.1.100:1234/v1</code>",
+                )
+            else:
+                try:
+                    new_url = self.ai_provider_store.set_local_base_url(args[0])
+                    self.send_message(
+                        chat_id,
+                        f"✅ 地端 LM-Studio 端點已更新為：<code>{html.escape(new_url)}</code>\n\n"
+                        f"可輸入 /ai_check 檢測連線狀況。",
+                    )
+                except ValueError as exc:
+                    self.send_message(chat_id, f"⚠️ {html.escape(str(exc))}")
+
         elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
             if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
@@ -275,7 +299,12 @@ class TelegramBotHandler:
     def _ai_status_text(self) -> str:
         lines = ["🤖 <b>AI provider/model 順序</b>"]
         for index, entry in enumerate(self.ai_provider_store.get_chain(), start=1):
-            lines.append(f"{index}. <code>{html.escape(entry)}</code>" + ("（主力）" if index == 1 else ""))
+            tag = "（主力）" if index == 1 else ""
+            if entry.startswith("local/"):
+                endpoint = self.ai_provider_store.get_local_base_url()
+                lines.append(f"{index}. <code>{html.escape(entry)}</code>{tag} (<code>{html.escape(endpoint)}</code>)")
+            else:
+                lines.append(f"{index}. <code>{html.escape(entry)}</code>{tag}")
         lines.append("\n前一個失敗（如 429）時，自動改用下一個。")
         return "\n".join(lines)
 

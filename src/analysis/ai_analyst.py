@@ -5,7 +5,12 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from src.config import GEMINI_API_KEY, OPENAI_API_KEY
+from src.config import (
+    GEMINI_API_KEY,
+    LOCAL_AI_API_KEY,
+    LOCAL_AI_BASE_URL,
+    OPENAI_API_KEY,
+)
 from src.state.ai_provider import AIProviderPreferenceStore, parse_entry
 from src.state.state_manager import StateManager
 
@@ -109,13 +114,61 @@ _PROVIDERS = {
         # Gemma models on Google AI Studio reject system/developer instructions.
         "supports_system_role": False,
     },
+    "local": {
+        "label": "LM-Studio",
+        "key_name": "LOCAL_AI_BASE_URL",
+        "supports_system_role": True,
+    },
 }
 
 
-def _provider_key(name: str, api_key: Optional[str] = None) -> str:
+def get_endpoint_url(name: str, local_base_url: Optional[str] = None) -> str:
+    if name == "local":
+        url = (local_base_url or LOCAL_AI_BASE_URL).strip().rstrip("/")
+        if url.endswith("/chat/completions"):
+            return url
+        if not url.endswith("/v1"):
+            url = f"{url}/v1"
+        return f"{url}/chat/completions"
+    return _PROVIDERS[name]["url"]
+
+
+def _resolve_model(name: str, model: str, local_base_url: Optional[str] = None) -> str:
+    if name != "local":
+        return model
+    if model in ("active", "auto", "default", ""):
+        base = (local_base_url or LOCAL_AI_BASE_URL).strip().rstrip("/")
+        if base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")]
+        if not base.endswith("/v1"):
+            models_url = f"{base}/v1/models"
+        else:
+            models_url = f"{base}/models"
+        try:
+            resp = requests.get(models_url, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                if data and isinstance(data, list) and isinstance(data[0], dict):
+                    loaded_id = data[0].get("id")
+                    if loaded_id:
+                        return loaded_id
+        except Exception as exc:
+            logger.debug("Could not auto-detect active model from %s: %s", models_url, exc)
+        return "active"
+    return model
+
+
+def _provider_key(
+    name: str, api_key: Optional[str] = None, local_base_url: Optional[str] = None
+) -> str:
     if name == "openai":
         return OPENAI_API_KEY if api_key is None else api_key
-    return GEMINI_API_KEY
+    if name == "gemma":
+        return GEMINI_API_KEY
+    if name == "local":
+        base = local_base_url if local_base_url is not None else LOCAL_AI_BASE_URL
+        return LOCAL_AI_API_KEY if base else ""
+    return ""
 
 
 def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
@@ -128,11 +181,18 @@ def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
 
 
 def _request_completion(
-    name: str, key: str, model: str, messages: List[Dict[str, str]], max_tokens: int
+    name: str,
+    key: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int,
+    url: Optional[str] = None,
 ) -> str:
+    endpoint = url or _PROVIDERS[name].get("url") or get_endpoint_url(name)
     label = _PROVIDERS[name]["label"]
+    timeout = 60 if name == "local" else 45
     response = requests.post(
-        _PROVIDERS[name]["url"],
+        endpoint,
         headers={"Authorization": f"Bearer {key}"},
         json={
             "model": model,
@@ -140,7 +200,7 @@ def _request_completion(
             "max_tokens": max_tokens,
             "messages": messages,
         },
-        timeout=45,
+        timeout=timeout,
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
@@ -197,44 +257,55 @@ def analyze_stock(
     if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 
+    pref_store = AIProviderPreferenceStore()
+    local_base_url = pref_store.get_local_base_url() or LOCAL_AI_BASE_URL
+
     candidates = []
-    for entry in chain or AIProviderPreferenceStore().get_chain():
+    for entry in chain or pref_store.get_chain():
         name, entry_model = parse_entry(entry)
-        key = _provider_key(name, api_key)
+        key = _provider_key(name, api_key, local_base_url)
         if key:
-            candidates.append((name, key, (model or entry_model) if name == "openai" else entry_model))
+            chosen_model = (model or entry_model) if name == "openai" else entry_model
+            candidates.append((name, key, chosen_model))
     if not candidates:
-        raise RuntimeError("尚未設定 OPENAI_API_KEY 或 GEMINI_API_KEY，請先完成服務設定。")
+        raise RuntimeError("尚未設定 OPENAI_API_KEY、GEMINI_API_KEY 或 LOCAL_AI_BASE_URL，請先完成服務設定。")
 
     snapshot = _stock_snapshot(ticker, state_manager or StateManager())
     user_content = json.dumps(snapshot, ensure_ascii=False, default=str)
 
     attempted = {}
+    last_exc = None
     for name, key, provider_model in candidates:
         label = _PROVIDERS[name]["label"]
+        actual_model = _resolve_model(name, provider_model, local_base_url)
+        endpoint = get_endpoint_url(name, local_base_url)
         attempted[label] = None
         try:
             return _request_completion(
-                name, key, provider_model, _build_messages(name, user_content), 900
+                name, key, actual_model, _build_messages(name, user_content), 900, url=endpoint
             )
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(f"{label}({provider_model})", ticker, key, exc)
+            _log_failure(f"{label}({actual_model})", ticker, key, exc)
             last_exc = exc
     raise RuntimeError(f"{'、'.join(attempted)} 分析請求失敗，請稍後重試。") from last_exc
 
 
 def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Probe each chain entry with a tiny request; used by the owner's /ai_check command."""
+    pref_store = AIProviderPreferenceStore()
+    local_base_url = pref_store.get_local_base_url() or LOCAL_AI_BASE_URL
     results = []
-    for entry in chain or AIProviderPreferenceStore().get_chain():
+    for entry in chain or pref_store.get_chain():
         name, model = parse_entry(entry)
         label = _PROVIDERS[name]["label"]
-        key = _provider_key(name)
+        key = _provider_key(name, local_base_url=local_base_url)
+        endpoint = get_endpoint_url(name, local_base_url)
+        actual_model = _resolve_model(name, model, local_base_url)
         result = {
             "entry": entry,
             "provider": name,
             "label": label,
-            "model": model,
+            "model": actual_model,
             "ok": False,
             "detail": "",
         }
@@ -244,11 +315,13 @@ def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
             continue
         started = time.perf_counter()
         try:
-            _request_completion(name, key, model, [{"role": "user", "content": "ping"}], 8)
+            _request_completion(
+                name, key, actual_model, [{"role": "user", "content": "ping"}], 8, url=endpoint
+            )
             result["ok"] = True
             result["detail"] = f"{int((time.perf_counter() - started) * 1000)}ms"
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(f"{label}({model})", "health-check", key, exc)
+            _log_failure(f"{label}({actual_model})", "health-check", key, exc)
             status = getattr(getattr(exc, "response", None), "status_code", None)
             result["detail"] = f"HTTP {status}" if status else type(exc).__name__
         results.append(result)
