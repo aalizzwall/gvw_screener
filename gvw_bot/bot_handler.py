@@ -26,6 +26,8 @@ from src.reporting.report_engine import generate_daily_report
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
 from src.analysis.intraday import run_intraday_monitoring
+from src.diagnostics.doctor import GVWDoctor
+from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
 
 logger = logging.getLogger("gvw.bot")
 
@@ -47,6 +49,8 @@ BOT_COMMANDS = [
     {"command": "ai_check", "description": "檢測可用性並將可用者排前面"},
     {"command": "ai_local", "description": "查看或設定地端 LM-Studio 端點 URL"},
     {"command": "update", "description": "一鍵從 GitHub 拉取最新代碼並重啟服務"},
+    {"command": "doctor", "description": "系統全方位健康診斷，/doctor fix 可執行自愈"},
+    {"command": "fix", "description": "自主修復指定 Issue，例如 /fix #28"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -91,6 +95,8 @@ class TelegramBotHandler:
         owner_user_id: Optional[str] = None,
         ai_access_store: Optional[AIAnalysisAccessStore] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
+        doctor: Optional[GVWDoctor] = None,
+        issue_solver: Optional[IssueSolver] = None,
     ):
         self.token = token or TELEGRAM_BOT_TOKEN
         self.scheduler = scheduler
@@ -99,9 +105,12 @@ class TelegramBotHandler:
         self.owner_user_id = str(configured_owner).strip()
         self.ai_access_store = ai_access_store or AIAnalysisAccessStore()
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
+        self.doctor = doctor or GVWDoctor(ai_provider_store=self.ai_provider_store)
+        self.issue_solver = issue_solver or IssueSolver(ai_provider_store=self.ai_provider_store)
         self.last_update_id = 0
         self.running = False
         self._updating = False
+        self._fixing = False
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
 
     def send_message(
@@ -149,7 +158,7 @@ class TelegramBotHandler:
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
-            "/ai_local", "/update",
+            "/ai_local", "/update", "/doctor", "/fix",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
@@ -300,6 +309,39 @@ class TelegramBotHandler:
                     daemon=True,
                     name="GVWSystemUpdateThread",
                 ).start()
+
+        elif cmd == "/doctor":
+            args = text.split()[1:]
+            if args and args[0].lower() == "fix":
+                if len(args) > 1 and (args[1].startswith("#") or args[1].isdigit()):
+                    issue_id = args[1]
+                    self._trigger_issue_solver(chat_id, issue_id)
+                else:
+                    self.send_message(chat_id, "🔧 正在執行系統常規自愈維護 (日誌輪替/空間壓縮/AI備援切換)...")
+                    try:
+                        actions = self.doctor.run_remediation()
+                        resp = "🛠️ <b>系統自愈維護執行結果：</b>\n\n" + "\n".join([f"• {act}" for act in actions])
+                        self.send_message(chat_id, resp)
+                    except Exception as e:
+                        self.send_message(chat_id, f"❌ 自愈程序異常：<code>{html.escape(str(e))}</code>")
+            else:
+                self.send_message(chat_id, "🩺 正在執行全系統健康診斷...")
+                try:
+                    report = self.doctor.format_diagnostics_report()
+                    self.send_message(chat_id, report)
+                except Exception as e:
+                    self.send_message(chat_id, f"❌ 診斷失敗：<code>{html.escape(str(e))}</code>")
+
+        elif cmd == "/fix":
+            args = text.split()[1:]
+            if not args or not (args[0].startswith("#") or args[0].isdigit()):
+                self.send_message(
+                    chat_id,
+                    "💡 請提供要修復的 GitHub Issue 編號，例如：<code>/fix #28</code> 或 <code>/doctor fix #28</code>",
+                )
+            else:
+                issue_id = args[0]
+                self._trigger_issue_solver(chat_id, issue_id)
 
         elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
@@ -463,6 +505,62 @@ class TelegramBotHandler:
             self.send_message(chat_id, f"❌ 更新程序異常：<code>{html.escape(str(e))}</code>")
         finally:
             self._updating = False
+
+    def _trigger_issue_solver(self, chat_id: Union[int, str], issue_id: str):
+        """Dispatches IssueSolver in a daemon thread and sends updates to Telegram."""
+        if self._fixing:
+            self.send_message(chat_id, "⚠️ 目前已有自主修復任務正在進行中，請稍候...")
+            return
+
+        clean_id = issue_id.lstrip("#").strip()
+        self._fixing = True
+        self.send_message(
+            chat_id,
+            f"🤖 <b>[GVW Doctor Agent] 自主修復任務已啟動！</b>\n\n"
+            f"• 目標：<code>Issue #{clean_id}</code>\n"
+            f"• 流程：檢索錯誤 ➔ 沙盒隔離 ➔ AI 規劃 ➔ 單元測試 ➔ 提 PR\n"
+            f"正在分析處理中，請稍候...",
+        )
+
+        def _worker():
+            try:
+                res = self.issue_solver.solve_issue(clean_id)
+                if res.get("success"):
+                    modified = ", ".join(res.get("modified_files", [])) or "無"
+                    msg = (
+                        f"🎉 <b>[GVW Doctor Agent] Issue #{clean_id} 自主修復成功！</b>\n\n"
+                        f"• 標題：{html.escape(res.get('title', ''))}\n"
+                        f"• 變更檔案：<code>{html.escape(modified)}</code>\n"
+                        f"• 修復摘要：{html.escape(res.get('explanation', ''))}\n"
+                        f"• 單元測試：100% 通過 ✅\n\n"
+                        f"🚀 <b>已建立 Pull Request：</b>\n"
+                        f"{res.get('pr_url')}\n\n"
+                        f"請在 GitHub 審閱合併；合併後於此處輸入 /update 即可部署上線！"
+                    )
+                else:
+                    msg = f"ℹ️ {res.get('message', '未能完成修復。')}"
+                self.send_message(chat_id, msg)
+            except SecurityGuardrailError as sge:
+                logger.warning(f"Security guardrail triggered during issue solve: {sge}")
+                self.send_message(
+                    chat_id,
+                    f"🛡️ <b>[安全護欄攔截]</b> 修復遭到阻斷：\n<code>{html.escape(str(sge))}</code>\n\n"
+                    f"系統已確保未修改任何受保護檔案，此問題請人工介入處理。",
+                )
+            except Exception as e:
+                logger.error(f"Error solving issue #{clean_id}: {e}", exc_info=True)
+                self.send_message(
+                    chat_id,
+                    f"❌ <b>Issue #{clean_id} 自主修復失敗：</b>\n<code>{html.escape(str(e))}</code>",
+                )
+            finally:
+                self._fixing = False
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name=f"GVWIssueSolverThread-{clean_id}",
+        ).start()
 
     def _is_owner(self, user_id: Optional[Union[int, str]]) -> bool:
         return bool(self.owner_user_id and str(user_id) == self.owner_user_id)
