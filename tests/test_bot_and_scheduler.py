@@ -313,38 +313,55 @@ class TestBotAndScheduler(unittest.TestCase):
 
     def test_non_owner_cannot_change_ai_provider(self):
         bot, provider_store = self._owner_bot_with_provider_store()
+        before = provider_store.get_chain()
 
-        bot.handle_command(20, "/ai_set", "/ai_set gemma", user_id=20)
+        bot.handle_command(20, "/ai_set", "/ai_set gemma/gemma-3-27b-it", user_id=20)
 
-        self.assertEqual(provider_store.get_primary(), "openai")
+        self.assertEqual(provider_store.get_chain(), before)
         self.assertIn("僅限系統負責人", bot.send_message.call_args.args[1])
 
-    def test_owner_can_set_and_view_ai_provider_order(self):
+    def test_owner_can_manage_ai_provider_model_chain(self):
         bot, provider_store = self._owner_bot_with_provider_store()
 
-        bot.handle_command(10, "/ai_set", "/ai_set gemma", user_id=10)
-        self.assertEqual(provider_store.get_order(), ["gemma", "openai"])
-        self.assertIn("主力：Google Gemma", bot.send_message.call_args.args[1])
+        bot.handle_command(
+            10, "/ai_set", "/ai_set gemma/gemma-3-27b-it openai/gpt-4o", user_id=10
+        )
+        self.assertEqual(provider_store.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o"])
+        self.assertIn("gemma/gemma-3-27b-it", bot.send_message.call_args.args[1])
 
-        bot.handle_command(10, "/ai_set", "/ai_set nope", user_id=10)
-        self.assertEqual(provider_store.get_primary(), "gemma")
-        self.assertIn("用法", bot.send_message.call_args.args[1])
+        bot.handle_command(10, "/ai_add", "/ai_add openai/gpt-4o-mini 2", user_id=10)
+        self.assertEqual(
+            provider_store.get_chain(),
+            ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini", "openai/gpt-4o"],
+        )
+
+        bot.handle_command(10, "/ai_remove", "/ai_remove 1", user_id=10)
+        self.assertEqual(provider_store.get_chain(), ["openai/gpt-4o-mini", "openai/gpt-4o"])
+
+        bot.handle_command(10, "/ai_set", "/ai_set openai/not-a-model", user_id=10)
+        self.assertEqual(provider_store.get_chain(), ["openai/gpt-4o-mini", "openai/gpt-4o"])
+        self.assertIn("不支援 model", bot.send_message.call_args.args[1])
+
+        bot.handle_command(10, "/ai_models", "/ai_models", user_id=10)
+        self.assertIn("gemma/gemma-3-27b-it", bot.send_message.call_args.args[1])
 
         bot.handle_command(10, "/ai_status", "/ai_status", user_id=10)
-        self.assertIn("備援：OpenAI", bot.send_message.call_args.args[1])
+        self.assertIn("1. <code>openai/gpt-4o-mini</code>（主力）", bot.send_message.call_args.args[1])
 
-    def test_ai_check_promotes_healthy_provider_when_primary_is_down(self):
+    def test_ai_check_moves_healthy_entries_first_when_primary_is_down(self):
         bot, provider_store = self._owner_bot_with_provider_store()
         results = [
-            {"provider": "openai", "label": "OpenAI", "model": "m1", "ok": False, "detail": "HTTP 429"},
-            {"provider": "gemma", "label": "Google Gemma", "model": "m2", "ok": True, "detail": "120ms"},
+            {"entry": "openai/gpt-4o-mini", "ok": False, "detail": "HTTP 429"},
+            {"entry": "gemma/gemma-3-27b-it", "ok": True, "detail": "120ms"},
         ]
 
         with patch("gvw_bot.bot_handler.check_providers", return_value=results):
             bot.handle_command(10, "/ai_check", "/ai_check", user_id=10)
 
-        self.assertEqual(provider_store.get_order(), ["gemma", "openai"])
-        self.assertIn("已改為 Google Gemma", bot.send_message.call_args.args[1])
+        self.assertEqual(
+            provider_store.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini"]
+        )
+        self.assertIn("新主力", bot.send_message.call_args.args[1])
 
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")

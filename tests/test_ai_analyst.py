@@ -16,7 +16,6 @@ class TestAIAnalyst(unittest.TestCase):
         self.provider_store = AIProviderPreferenceStore(f"{self.temp_dir.name}/ai_provider.json")
         for target, value in (
             ("src.analysis.ai_analyst.GEMINI_API_KEY", ""),
-            ("src.analysis.ai_analyst.GEMMA_MODEL", "gemma-test"),
             ("src.analysis.ai_analyst.OPENAI_API_KEY", ""),
         ):
             patcher = patch(target, value)
@@ -180,15 +179,17 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertIn("api.openai.com", first.args[0])
         self.assertIn("generativelanguage.googleapis.com", second.args[0])
         self.assertEqual(second.kwargs["headers"]["Authorization"], "Bearer gem-key")
-        self.assertEqual(second.kwargs["json"]["model"], "gemma-test")
+        self.assertEqual(second.kwargs["json"]["model"], "gemma-3-27b-it")
         # Gemma rejects system instructions, so they are merged into one user message.
         messages = second.kwargs["json"]["messages"]
         self.assertEqual([m["role"] for m in messages], ["user"])
         self.assertIn("台積電", messages[0]["content"])
         self.assertIn("台灣股票研究助理", messages[0]["content"])
 
-    def test_owner_selected_primary_is_tried_first(self):
-        self.provider_store.set_primary("gemma")
+    def test_owner_selected_chain_order_and_models_are_used(self):
+        self.provider_store.set_chain(
+            ["gemma/gemma-3-12b-it", "openai/gpt-4o", "openai/gpt-4o-mini"]
+        )
 
         with (
             patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
@@ -202,6 +203,29 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertEqual(report, "Gemma 先答")
         post.assert_called_once()
         self.assertIn("generativelanguage.googleapis.com", post.call_args.args[0])
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gemma-3-12b-it")
+
+    def test_falls_through_models_of_same_provider_before_next_provider(self):
+        self.provider_store.set_chain(
+            ["openai/gpt-4o", "openai/gpt-4o-mini", "gemma/gemma-3-27b-it"]
+        )
+        responses = [
+            self._http_error(429),
+            self._http_error(429),
+            self._ok_response("第三個才成功"),
+        ]
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key")
+
+        self.assertEqual(report, "第三個才成功")
+        self.assertEqual(
+            [call.kwargs["json"]["model"] for call in post.call_args_list],
+            ["gpt-4o", "gpt-4o-mini", "gemma-3-27b-it"],
+        )
 
     def test_skips_provider_without_key_and_reports_all_failures(self):
         with (
@@ -238,7 +262,9 @@ class TestAIAnalyst(unittest.TestCase):
         ):
             results = check_providers()
 
-        self.assertEqual([r["provider"] for r in results], ["openai", "gemma"])
+        self.assertEqual(
+            [r["entry"] for r in results], ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it"]
+        )
         self.assertFalse(results[0]["ok"])
         self.assertEqual(results[0]["detail"], "HTTP 429")
         self.assertFalse(results[1]["ok"])
@@ -247,14 +273,40 @@ class TestAIAnalyst(unittest.TestCase):
 
 class TestAIProviderPreferenceStore(unittest.TestCase):
 
-    def test_defaults_to_openai_and_persists_owner_choice(self):
+    def test_defaults_then_persists_owner_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            self.assertEqual(store.get_order(), ["openai", "gemma"])
-            store.set_primary("gemma")
-            self.assertEqual(AIProviderPreferenceStore(store.path).get_order(), ["gemma", "openai"])
+            self.assertEqual(store.get_chain(), ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it"])
+
+            store.set_chain(["gemma/gemma-3-27b-it", "openai/gpt-4o", "gemma/gemma-3-27b-it"])
+            reloaded = AIProviderPreferenceStore(store.path)
+            self.assertEqual(reloaded.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o"])
+
+    def test_add_remove_and_whitelist_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            store.set_chain(["openai/gpt-4o"])
+
+            self.assertEqual(
+                store.add("gemma/gemma-3-12b-it", position=1),
+                ["gemma/gemma-3-12b-it", "openai/gpt-4o"],
+            )
+            self.assertEqual(store.remove("1"), ["openai/gpt-4o"])
             with self.assertRaises(ValueError):
-                store.set_primary("unknown")
+                store.remove("openai/gpt-4o")  # last entry cannot be removed
+            for bad in ("openai/gpt-9", "foo/bar", "gemma", ""):
+                with self.assertRaises(ValueError):
+                    store.add(bad)
+
+    def test_reads_legacy_primary_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/ai_provider.json"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"primary": "gemma"}')
+            self.assertEqual(
+                AIProviderPreferenceStore(path).get_chain(),
+                ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini"],
+            )
 
 
 if __name__ == "__main__":

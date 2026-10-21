@@ -1,38 +1,119 @@
 import json
 import os
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
-from src.config import AI_PROVIDER_FILE
+from src.config import AI_PROVIDER_FILE, GEMMA_MODEL, OPENAI_MODEL
 
 PROVIDER_NAMES = ("openai", "gemma")
-DEFAULT_PRIMARY = "openai"
+
+# Models the owner may select, per provider. Strongest first. The models configured
+# through OPENAI_MODEL / GEMMA_MODEL are always allowed as well.
+_BUILTIN_MODELS: Dict[str, List[str]] = {
+    "openai": ["gpt-4.1", "gpt-4o", "gpt-4.1-mini", "gpt-4o-mini"],
+    "gemma": ["gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"],
+}
+
+
+def model_catalog() -> Dict[str, List[str]]:
+    catalog = {name: list(models) for name, models in _BUILTIN_MODELS.items()}
+    for name, configured in (("openai", OPENAI_MODEL), ("gemma", GEMMA_MODEL)):
+        if configured and configured not in catalog[name]:
+            catalog[name].append(configured)
+    return catalog
+
+
+def default_chain() -> List[str]:
+    return [f"openai/{OPENAI_MODEL}", f"gemma/{GEMMA_MODEL}"]
+
+
+def parse_entry(entry: str) -> Tuple[str, str]:
+    """Validate a ``provider/model`` entry against the whitelist and return its parts."""
+    provider, sep, model = str(entry).strip().partition("/")
+    provider = provider.lower()
+    if not sep or provider not in PROVIDER_NAMES:
+        raise ValueError(f"格式應為 provider/model，provider 僅支援：{', '.join(PROVIDER_NAMES)}")
+    if model not in model_catalog()[provider]:
+        raise ValueError(f"{provider} 不支援 model：{model}（可用 /ai_models 查看）")
+    return provider, model
 
 
 class AIProviderPreferenceStore:
-    """Persist which AI provider the owner selected as primary; the rest are fallbacks."""
+    """Persist the owner-defined ordered fallback chain of ``provider/model`` entries."""
 
     def __init__(self, path: str = AI_PROVIDER_FILE):
         self.path = path
 
-    def get_primary(self) -> str:
+    def get_chain(self) -> List[str]:
         try:
             with open(self.path, "r", encoding="utf-8") as state_file:
-                primary = json.load(state_file).get("primary")
-        except (FileNotFoundError, ValueError, AttributeError):
-            return DEFAULT_PRIMARY
-        return primary if primary in PROVIDER_NAMES else DEFAULT_PRIMARY
+                data = json.load(state_file)
+        except (FileNotFoundError, ValueError):
+            return default_chain()
+        if not isinstance(data, dict):
+            return default_chain()
 
-    def set_primary(self, provider: str) -> None:
-        if provider not in PROVIDER_NAMES:
-            raise ValueError(f"Unknown AI provider: {provider}")
+        chain = data.get("chain")
+        if isinstance(chain, list):
+            valid = []
+            for entry in chain:
+                try:
+                    parse_entry(entry)
+                except ValueError:
+                    continue
+                valid.append(entry)
+            if valid:
+                return valid
+
+        # Legacy format: {"primary": "<provider>"} -> that provider's default model first.
+        primary = data.get("primary")
+        chain = default_chain()
+        if primary in PROVIDER_NAMES:
+            chain.sort(key=lambda entry: not entry.startswith(f"{primary}/"))
+        return chain
+
+    def set_chain(self, chain: List[str]) -> List[str]:
+        normalized = []
+        for entry in chain:
+            provider, model = parse_entry(entry)
+            item = f"{provider}/{model}"
+            if item not in normalized:
+                normalized.append(item)
+        if not normalized:
+            raise ValueError("至少需要一個 provider/model。")
+        self._save({"chain": normalized})
+        return normalized
+
+    def add(self, entry: str, position: Optional[int] = None) -> List[str]:
+        provider, model = parse_entry(entry)
+        item = f"{provider}/{model}"
+        chain = [existing for existing in self.get_chain() if existing != item]
+        index = len(chain) if position is None else max(0, min(position - 1, len(chain)))
+        chain.insert(index, item)
+        return self.set_chain(chain)
+
+    def remove(self, target: str) -> List[str]:
+        """Remove by ``provider/model`` or by 1-based position."""
+        chain = self.get_chain()
+        if target.strip().isdigit():
+            index = int(target) - 1
+            if not 0 <= index < len(chain):
+                raise ValueError(f"序號超出範圍：{target}")
+            removed = chain.pop(index)
+        else:
+            provider, model = parse_entry(target)
+            removed = f"{provider}/{model}"
+            if removed not in chain:
+                raise ValueError(f"清單中沒有 {removed}")
+            chain.remove(removed)
+        if not chain:
+            raise ValueError(f"不能移除最後一個 provider/model（{removed}）。")
+        return self.set_chain(chain)
+
+    def _save(self, data: Dict[str, List[str]]) -> None:
         parent = os.path.dirname(self.path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         temp_path = f"{self.path}.tmp"
         with open(temp_path, "w", encoding="utf-8") as state_file:
-            json.dump({"primary": provider}, state_file, ensure_ascii=False, indent=2)
+            json.dump(data, state_file, ensure_ascii=False, indent=2)
         os.replace(temp_path, self.path)
-
-    def get_order(self) -> List[str]:
-        primary = self.get_primary()
-        return [primary] + [name for name in PROVIDER_NAMES if name != primary]
