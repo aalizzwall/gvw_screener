@@ -328,6 +328,7 @@ class TestBotAndScheduler(unittest.TestCase):
             ])
 
             # Approved user
+            ai_store.request(20, 20)
             ai_store.decide(20, approved=True)
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
