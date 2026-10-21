@@ -1,10 +1,12 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, List, Optional
 
 import requests
 
-from src.config import OPENAI_API_KEY, OPENAI_MODEL
+from src.config import GEMINI_API_KEY, GEMMA_MODEL, OPENAI_API_KEY, OPENAI_MODEL
+from src.state.ai_provider import AIProviderPreferenceStore
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -93,70 +95,156 @@ def _stock_snapshot(ticker: str, state: StateManager) -> Dict[str, Any]:
     }
 
 
+_PROVIDERS = {
+    "openai": {
+        "label": "OpenAI",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "key_name": "OPENAI_API_KEY",
+        "supports_system_role": True,
+    },
+    "gemma": {
+        "label": "Google Gemma",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "key_name": "GEMINI_API_KEY",
+        # Gemma models on Google AI Studio reject system/developer instructions.
+        "supports_system_role": False,
+    },
+}
+
+
+def _resolve_provider(name: str, api_key: Optional[str], model: Optional[str]):
+    if name == "openai":
+        return (OPENAI_API_KEY if api_key is None else api_key), (model or OPENAI_MODEL)
+    return GEMINI_API_KEY, GEMMA_MODEL
+
+
+def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
+    if _PROVIDERS[name]["supports_system_role"]:
+        return [
+            {"role": "system", "content": ANALYSIS_INSTRUCTIONS},
+            {"role": "user", "content": user_content},
+        ]
+    return [{"role": "user", "content": f"{ANALYSIS_INSTRUCTIONS}\n\n資料快照 (JSON)：\n{user_content}"}]
+
+
+def _request_completion(
+    name: str, key: str, model: str, messages: List[Dict[str, str]], max_tokens: int
+) -> str:
+    label = _PROVIDERS[name]["label"]
+    response = requests.post(
+        _PROVIDERS[name]["url"],
+        headers={"Authorization": f"Bearer {key}"},
+        json={
+            "model": model,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        },
+        timeout=45,
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"{label} 回傳空白分析結果")
+    return content.strip()
+
+
+def _log_failure(label: str, ticker: str, key: str, exc: Exception) -> None:
+    response = getattr(exc, "response", None)
+    if response is None:
+        logger.error(
+            "%s stock analysis failed for %s: %s: %s",
+            label, ticker, type(exc).__name__, exc,
+        )
+        return
+    status_code = getattr(response, "status_code", "unknown")
+    try:
+        error = response.json()
+    except ValueError:
+        error = {}
+    if isinstance(error, list) and error:
+        error = error[0]
+    error = error.get("error", {}) if isinstance(error, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+    message = str(error.get("message", ""))
+    if key and key in message:
+        message = message.replace(key, "[REDACTED]")
+    logger.error(
+        "%s stock analysis failed for %s: HTTP %s; type=%s; code=%s; message=%s",
+        label,
+        ticker,
+        status_code,
+        error.get("type", error.get("status", "")),
+        error.get("code", ""),
+        message,
+    )
+
+
 def analyze_stock(
     ticker: str,
     state_manager: Optional[StateManager] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    provider_order: Optional[List[str]] = None,
 ) -> str:
-    """Evaluate one cached Taiwan stock with OpenAI; this function never places orders."""
+    """Evaluate one cached Taiwan stock with the owner-selected AI provider.
+
+    Providers are tried in the owner-selected order; if one fails (429, 5xx, timeout,
+    invalid response, ...) the next configured provider is tried. This function never
+    places orders. ``api_key``/``model`` override the OpenAI provider only.
+    """
     if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 
-    key = OPENAI_API_KEY if api_key is None else api_key
-    if not key:
-        raise RuntimeError("尚未設定 OPENAI_API_KEY，請先完成服務設定。")
+    order = provider_order or AIProviderPreferenceStore().get_order()
+    candidates = []
+    for name in order:
+        key, provider_model = _resolve_provider(name, api_key, model)
+        if key:
+            candidates.append((name, key, provider_model))
+    if not candidates:
+        raise RuntimeError("尚未設定 OPENAI_API_KEY 或 GEMINI_API_KEY，請先完成服務設定。")
 
     snapshot = _stock_snapshot(ticker, state_manager or StateManager())
-    try:
-        response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": model or OPENAI_MODEL,
-                "temperature": 0.2,
-                "max_tokens": 900,
-                "messages": [
-                    {"role": "system", "content": ANALYSIS_INSTRUCTIONS},
-                    {
-                        "role": "user",
-                        "content": json.dumps(snapshot, ensure_ascii=False, default=str),
-                    },
-                ],
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("OpenAI 回傳空白分析結果")
-        return content.strip()
-    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-        response = getattr(exc, "response", None)
-        if response is not None:
-            status_code = getattr(response, "status_code", "unknown")
-            try:
-                error = response.json().get("error", {})
-            except ValueError:
-                error = {}
-            if not isinstance(error, dict):
-                error = {}
-            message = str(error.get("message", ""))
-            if key in message:
-                message = message.replace(key, "[REDACTED]")
-            logger.error(
-                "OpenAI stock analysis failed for %s: HTTP %s; type=%s; code=%s; message=%s",
-                ticker,
-                status_code,
-                error.get("type", ""),
-                error.get("code", ""),
-                message,
+    user_content = json.dumps(snapshot, ensure_ascii=False, default=str)
+
+    attempted = []
+    for name, key, provider_model in candidates:
+        label = _PROVIDERS[name]["label"]
+        attempted.append(label)
+        try:
+            return _request_completion(
+                name, key, provider_model, _build_messages(name, user_content), 900
             )
-        else:
-            logger.error(
-                "OpenAI stock analysis failed for %s: %s: %s",
-                ticker,
-                type(exc).__name__,
-                exc,
-            )
-        raise RuntimeError("OpenAI 分析請求失敗，請稍後重試。") from exc
+        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            _log_failure(label, ticker, key, exc)
+            if (name, key, provider_model) != candidates[-1]:
+                logger.warning("%s 分析失敗，改用下一個 AI provider。", label)
+            last_exc = exc
+    raise RuntimeError(f"{'、'.join(attempted)} 分析請求失敗，請稍後重試。") from last_exc
+
+
+def check_providers(provider_order: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Probe each provider with a tiny request; used by the owner's /ai_check command."""
+    results = []
+    for name in provider_order or AIProviderPreferenceStore().get_order():
+        label = _PROVIDERS[name]["label"]
+        key, model = _resolve_provider(name, None, None)
+        result = {"provider": name, "label": label, "model": model, "ok": False, "detail": ""}
+        if not key:
+            result["detail"] = f"未設定 {_PROVIDERS[name]['key_name']}"
+            results.append(result)
+            continue
+        started = time.perf_counter()
+        try:
+            _request_completion(name, key, model, [{"role": "user", "content": "ping"}], 8)
+            result["ok"] = True
+            result["detail"] = f"{int((time.perf_counter() - started) * 1000)}ms"
+        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            _log_failure(label, "health-check", key, exc)
+            response = getattr(exc, "response", None)
+            status = getattr(response, "status_code", None)
+            result["detail"] = f"HTTP {status}" if status else type(exc).__name__
+        results.append(result)
+    return results

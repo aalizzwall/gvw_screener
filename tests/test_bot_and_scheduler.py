@@ -9,6 +9,7 @@ from gvw_bot.main import CredentialRedactionFilter
 from gvw_bot.bot_handler import PUBLIC_REPLY_KEYBOARD, REPLY_KEYBOARD, TelegramBotHandler
 from gvw_bot.scheduler import GVWScheduler, ScheduledJob
 from src.state.ai_access import AIAnalysisAccessStore
+from src.state.ai_provider import AIProviderPreferenceStore
 
 class TestBotAndScheduler(unittest.TestCase):
 
@@ -301,6 +302,49 @@ class TestBotAndScheduler(unittest.TestCase):
 
         analyze.assert_called_once_with("2330")
         self.assertIn("OPENAI_API_KEY", bot.send_message.call_args.args[1])
+
+    def _owner_bot_with_provider_store(self):
+        provider_store = AIProviderPreferenceStore(f"{self.ai_temp_dir.name}/provider.json")
+        bot = TelegramBotHandler(
+            token="test-token", owner_user_id="10", ai_provider_store=provider_store
+        )
+        bot.send_message = Mock()
+        return bot, provider_store
+
+    def test_non_owner_cannot_change_ai_provider(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+
+        bot.handle_command(20, "/ai_set", "/ai_set gemma", user_id=20)
+
+        self.assertEqual(provider_store.get_primary(), "openai")
+        self.assertIn("僅限系統負責人", bot.send_message.call_args.args[1])
+
+    def test_owner_can_set_and_view_ai_provider_order(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+
+        bot.handle_command(10, "/ai_set", "/ai_set gemma", user_id=10)
+        self.assertEqual(provider_store.get_order(), ["gemma", "openai"])
+        self.assertIn("主力：Google Gemma", bot.send_message.call_args.args[1])
+
+        bot.handle_command(10, "/ai_set", "/ai_set nope", user_id=10)
+        self.assertEqual(provider_store.get_primary(), "gemma")
+        self.assertIn("用法", bot.send_message.call_args.args[1])
+
+        bot.handle_command(10, "/ai_status", "/ai_status", user_id=10)
+        self.assertIn("備援：OpenAI", bot.send_message.call_args.args[1])
+
+    def test_ai_check_promotes_healthy_provider_when_primary_is_down(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+        results = [
+            {"provider": "openai", "label": "OpenAI", "model": "m1", "ok": False, "detail": "HTTP 429"},
+            {"provider": "gemma", "label": "Google Gemma", "model": "m2", "ok": True, "detail": "120ms"},
+        ]
+
+        with patch("gvw_bot.bot_handler.check_providers", return_value=results):
+            bot.handle_command(10, "/ai_check", "/ai_check", user_id=10)
+
+        self.assertEqual(provider_store.get_order(), ["gemma", "openai"])
+        self.assertIn("已改為 Google Gemma", bot.send_message.call_args.args[1])
 
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")
