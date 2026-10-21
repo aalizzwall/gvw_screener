@@ -64,20 +64,20 @@ def run_intraday_monitoring(
     provider_factory: Optional[DataProviderFactory] = None
 ) -> List[str]:
     """
-    Scans Top-20 stocks (score > 0.8 & t_score >= 1.0) for real-time signals.
+    Scans Top-30 GVW stocks for real-time breakout signals via 分時三步法.
     """
     state = state_manager or StateManager()
     factory = provider_factory or DataProviderFactory()
     full_report = state.get_ranks()
 
     all_data = full_report.get('data', [])
-    filtered = [
-        r for r in all_data
-        if r.get('final_score', 0) > 0.8 and r.get('t_score', 0) >= 1.0
-    ]
-    candidates = sorted(filtered, key=lambda x: x.get('final_score', 0), reverse=True)[:20]
+    candidates = sorted(
+        all_data,
+        key=lambda x: x.get('final_score', 0),
+        reverse=True,
+    )[:30]
 
-    logger.info(f"📋 [START] Intraday Monitoring {len(candidates)} TOP-20 stocks (score > 0.8)...")
+    logger.info(f"📋 [START] Intraday Monitoring {len(candidates)} TOP-30 GVW stocks...")
 
     # Load previous signal cache
     last_signals = {}

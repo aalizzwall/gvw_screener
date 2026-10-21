@@ -23,6 +23,7 @@ from src.config import LOGS_DIR, TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_USER_ID
 from gvw_bot.heartbeat import HeartbeatManager
 from gvw_bot.scheduler import GVWScheduler
 from gvw_bot.bot_handler import TelegramBotHandler
+from src.state.alert_subscribers import AlertSubscriptionStore
 
 
 class CredentialRedactionFilter(logging.Filter):
@@ -90,14 +91,16 @@ def main():
     heartbeat_mgr.write_heartbeat(status="starting")
 
     # 2. Start Autonomous Background Scheduler
-    scheduler = GVWScheduler(heartbeat_mgr=heartbeat_mgr)
+    alert_store = AlertSubscriptionStore()
+    scheduler = GVWScheduler(heartbeat_mgr=heartbeat_mgr, alert_store=alert_store)
     scheduler.start()
 
     # 3. Start Telegram Bot Interaction Handler
     bot = TelegramBotHandler(
         token=TELEGRAM_BOT_TOKEN,
         scheduler=scheduler,
-        heartbeat_mgr=heartbeat_mgr
+        heartbeat_mgr=heartbeat_mgr,
+        alert_store=alert_store,
     )
 
     # Graceful shutdown handler

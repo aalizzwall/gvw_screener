@@ -29,11 +29,13 @@ from src.analysis.intraday import run_intraday_monitoring
 from src.diagnostics.doctor import GVWDoctor
 from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
 from src.agent.maintenance_agent import MaintenanceAgent
+from src.state.alert_subscribers import AlertSubscriptionStore
 
 logger = logging.getLogger("gvw.bot")
 
 BOT_COMMANDS = [
     {"command": "report", "description": "查看 GVW 選股報告與 Top 10"},
+    {"command": "toggle_monitor", "description": "開啟或關閉盤中突破即時推播"},
     {"command": "status", "description": "查看服務狀態"},
     {"command": "monitor", "description": "執行盤中信號掃描"},
     {"command": "collect", "description": "手動採集股票資料"},
@@ -55,29 +57,32 @@ BOT_COMMANDS = [
     {"command": "maintain", "description": "切換系統維護模式，可直接用自然語言診斷資料與除錯"},
 ]
 MENU_BUTTONS = {
+    "🏆 Top 10 選股": "/report",
     "📊 選股報告 / Top 10": "/report",
+    "🔔 盤中監控 (on)": "/toggle_monitor",
+    "🔕 盤中監控 (off)": "/toggle_monitor",
+    "🔔 盤中監控": "/toggle_monitor",
+    "🔕 盤中監控": "/toggle_monitor",
+    "🤖 AI 個股分析": "/analyze",
+    "📝 申請 AI 分析": "/request_ai",
     "🩺 系統狀態": "/status",
     "🔍 盤中監控": "/monitor",
     "📥 採集資料": "/collect",
     "🏆 重新排名": "/rank",
     "⏰ 排程任務": "/jobs",
-    "🤖 AI 個股分析": "/analyze",
-    "📝 申請 AI 分析": "/request_ai",
 }
 REPLY_KEYBOARD = {
     "keyboard": [
-        ["📊 選股報告 / Top 10", "🩺 系統狀態"],
-        ["🔍 盤中監控", "📥 採集資料"],
-        ["🏆 重新排名", "⏰ 排程任務"],
+        ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
         ["🤖 AI 個股分析"],
-        ["📝 申請 AI 分析"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
 }
 PUBLIC_REPLY_KEYBOARD = {
     "keyboard": [
-        ["🤖 AI 個股分析", "📝 申請 AI 分析"],
+        ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+        ["📝 申請 AI 分析"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -97,6 +102,7 @@ class TelegramBotHandler:
         owner_user_id: Optional[str] = None,
         ai_access_store: Optional[AIAnalysisAccessStore] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
+        alert_store: Optional[AlertSubscriptionStore] = None,
         doctor: Optional[GVWDoctor] = None,
         issue_solver: Optional[IssueSolver] = None,
         maintenance_agent: Optional[MaintenanceAgent] = None,
@@ -108,6 +114,7 @@ class TelegramBotHandler:
         self.owner_user_id = str(configured_owner).strip()
         self.ai_access_store = ai_access_store or AIAnalysisAccessStore()
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
+        self.alert_store = alert_store or AlertSubscriptionStore()
         self.doctor = doctor or GVWDoctor(ai_provider_store=self.ai_provider_store)
         self.issue_solver = issue_solver or IssueSolver(ai_provider_store=self.ai_provider_store)
         self.maintenance_agent = maintenance_agent or MaintenanceAgent(
@@ -127,6 +134,7 @@ class TelegramBotHandler:
         text: str,
         parse_mode: str = "HTML",
         reply_markup: Optional[Dict[str, Any]] = None,
+        user_id: Optional[Union[int, str]] = None,
     ) -> bool:
         if not self.token:
             return False
@@ -136,7 +144,7 @@ class TelegramBotHandler:
             "text": text,
             "parse_mode": parse_mode,
             "reply_markup": (
-                reply_markup if reply_markup is not None else self._keyboard_for_chat(chat_id)
+                reply_markup if reply_markup is not None else self._keyboard_for_chat(chat_id, user_id=user_id)
             ),
         }
         try:
@@ -146,9 +154,25 @@ class TelegramBotHandler:
             logger.error(f"Error sending telegram message: {e}")
             return False
 
-    def _keyboard_for_chat(self, chat_id: Union[int, str]) -> Dict[str, Any]:
-        # Both Owner and regular users see the same clean keyboard buttons
-        return PUBLIC_REPLY_KEYBOARD
+    def _keyboard_for_chat(
+        self,
+        chat_id: Union[int, str],
+        user_id: Optional[Union[int, str]] = None,
+    ) -> Dict[str, Any]:
+        target_uid = user_id if user_id is not None else chat_id
+        is_sub = self.alert_store.is_subscribed(chat_id)
+        monitor_btn = "🔔 盤中監控 (on)" if is_sub else "🔕 盤中監控 (off)"
+        can_analyze = self._can_analyze(target_uid)
+        ai_btn = "🤖 AI 個股分析" if can_analyze else "📝 申請 AI 分析"
+
+        return {
+            "keyboard": [
+                ["🏆 Top 10 選股", monitor_btn],
+                [ai_btn],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
 
     def handle_command(
         self,
@@ -162,13 +186,13 @@ class TelegramBotHandler:
         cmd = MENU_BUTTONS.get(command.strip(), command.lower().strip())
         logger.info(f"Received Telegram command: {cmd} from chat {chat_id}")
         owner_only_commands = {
-            "/report", "/today", "/status", "/jobs", "/monitor",
+            "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
             "/ai_local", "/update", "/doctor", "/fix", "/maintain",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
-            self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
+            self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。", user_id=user_id)
             return
 
         if cmd in ["/start", "/help"]:
@@ -180,17 +204,34 @@ class TelegramBotHandler:
                 "• 14:00 盤後全市場數據採集\n"
                 "• 15:00 全局 GVW 評分排名\n"
                 "• 15:30 盤後篩選總結日報\n\n"
-                "<b>可用即時指令：</b>\n"
-                "一般使用者可申請 AI 個股分析；系統管理功能僅限負責人使用。\n"
-                "/analyze <代碼> - AI 個股分析，例如 /analyze 2330\n"
-                "/request_ai - 申請 AI 個股分析使用權限\n"
+                "<b>三大核心功能（可直接點擊下方鍵盤按鈕）：</b>\n"
+                "1. 🏆 <b>Top 10 選股</b>：隨時查看最新全市場 GVW Top 10 核心優質標的\n"
+                "2. 🔔 <b>盤中監控 (on/off)</b>：開啟或關閉推播，當 Top 30 核心標的同時通過「分時三步法」突破信號時主動通知\n"
+                "3. 🤖 <b>AI 個股分析</b> / 📝 <b>申請 AI 分析</b>：對個股進行基本面、動能與價量 AI 深度評估\n"
             )
-            self.send_message(chat_id, msg)
+            self.send_message(chat_id, msg, user_id=user_id)
 
-        elif cmd in ["/report", "/today"]:
-            self.send_message(chat_id, "⏳ 正在生成最新篩選報告，請稍候...")
+        elif cmd in ["/report", "/today", "/top10"]:
+            self.send_message(chat_id, "⏳ 正在生成最新篩選報告，請稍候...", user_id=user_id)
             report = generate_daily_report()
-            self.send_message(chat_id, report)
+            self.send_message(chat_id, report, user_id=user_id)
+
+        elif cmd == "/toggle_monitor":
+            is_sub = self.alert_store.is_subscribed(chat_id)
+            if is_sub:
+                self.alert_store.unsubscribe(chat_id)
+                self.send_message(
+                    chat_id,
+                    "🔕 <b>已關閉盤中監控主動推播</b>\n\n您將不會再收到盤中突破通知。若欲重新開啟，請點擊下方按鈕。",
+                    user_id=user_id,
+                )
+            else:
+                self.alert_store.subscribe(chat_id)
+                self.send_message(
+                    chat_id,
+                    "🔔 <b>已開啟盤中監控主動推播</b>\n\n當全市場 Top 30 核心標的同時觸發「分時三步法」突破信號時，系統將主動發送推播通知您！",
+                    user_id=user_id,
+                )
 
         elif cmd == "/status":
             health_info = self.hb.check_health() if self.hb else {}
@@ -710,7 +751,7 @@ class TelegramBotHandler:
                 if approved
                 else "❌ 你的 AI 分析使用申請已被拒絕；如有需要可再次申請。"
             )
-            self.send_message(request["chat_id"], applicant_message)
+            self.send_message(request["chat_id"], applicant_message, user_id=user_id)
         self.send_message(self.owner_user_id, f"已處理 user ID {html.escape(user_id)}：{decision}。")
 
     def _answer_callback_query(self, callback_id: Optional[str], text: str):

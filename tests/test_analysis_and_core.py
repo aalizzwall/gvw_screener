@@ -70,5 +70,22 @@ class TestAnalysisAndCore(unittest.TestCase):
         self.assertEqual(saved_report['data'][0]['kline_status'], 'ACCUMULATING')
         self.assertEqual(len(alerts), 1)
 
+    def test_intraday_scans_top_30_candidates(self):
+        state = Mock()
+        stocks = [
+            {'ticker': str(1000 + i), 'name': f'Stock{i}', 'final_score': float(i)}
+            for i in range(40)
+        ]
+        state.get_ranks.return_value = {'data': stocks}
+        state.get_stock_data.return_value = {'prices': []}
+        factory = Mock()
+        factory.fetch_price_history.return_value = []
+
+        with TemporaryDirectory() as temp_dir:
+            with patch('src.analysis.intraday.SIGNAL_CACHE_FILE', f'{temp_dir}/signals.json'):
+                run_intraday_monitoring(state, factory)
+
+        self.assertEqual(factory.fetch_price_history.call_count, 30)
+
 if __name__ == "__main__":
     unittest.main()

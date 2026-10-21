@@ -12,11 +12,13 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from src.config import TELEGRAM_HOME_CHANNEL
 from src.core.orchestrator import Orchestrator
 from src.analysis.ranker import run_ranking
 from src.analysis.intraday import run_intraday_monitoring
 from src.reporting.report_engine import generate_daily_report
 from src.reporting.telegram_notifier import send_telegram_message
+from src.state.alert_subscribers import AlertSubscriptionStore
 from gvw_bot.heartbeat import HeartbeatManager
 
 logger = logging.getLogger("gvw.scheduler")
@@ -79,9 +81,14 @@ class GVWScheduler:
     reporting, and intraday monitoring.
     """
 
-    def __init__(self, heartbeat_mgr: Optional[HeartbeatManager] = None):
+    def __init__(
+        self,
+        heartbeat_mgr: Optional[HeartbeatManager] = None,
+        alert_store: Optional[AlertSubscriptionStore] = None,
+    ):
         self.hb = heartbeat_mgr or HeartbeatManager()
         self.orchestrator = Orchestrator()
+        self.alert_store = alert_store or AlertSubscriptionStore()
         self.running = False
         self._thread: Optional[threading.Thread] = None
         self.jobs: List[ScheduledJob] = []
@@ -152,6 +159,12 @@ class GVWScheduler:
         if alerts:
             for alert in alerts:
                 send_telegram_message(alert)
+            channel_id = str(TELEGRAM_HOME_CHANNEL).strip() if TELEGRAM_HOME_CHANNEL else ""
+            for chat_id in self.alert_store.get_subscribers():
+                if str(chat_id) == channel_id:
+                    continue
+                for alert in alerts:
+                    send_telegram_message(alert, chat_id=chat_id)
         self.hb.update_job_status("intraday_monitor", "ok", message=f"Generated {len(alerts)} alerts")
 
     def job_daily_collection(self):
