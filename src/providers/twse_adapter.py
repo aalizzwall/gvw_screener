@@ -1,4 +1,5 @@
 import asyncio
+import time
 import requests
 import logging
 import math
@@ -19,6 +20,7 @@ class TWSEAdapter(DataProvider):
         "daily_all": "/exchangeReport/STOCK_DAY_ALL", # Daily Trading Info
         "basic_info": "/opendata/t187ap03_L",        # Company Basic Info (Industry)
         "shareholders": "/opendata/t187ap02_L",      # Major Shareholders (>10%)
+        "valuation": "/exchangeReport/BWIBBU_d",     # PE, PB, Dividend Yield
     }
 
     USER_AGENTS = [
@@ -32,6 +34,8 @@ class TWSEAdapter(DataProvider):
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
+        self._valuation_cache = None
+        self._valuation_cache_time = 0.0
         if not self.logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter('[TWSE_ADAPTER] %(asctime)s - %(levelname)s - %(message)s')
@@ -70,6 +74,20 @@ class TWSEAdapter(DataProvider):
             self.logger.error(f"Error fetching {dataset_key}: {e}")
             return None
 
+    def _get_valuation_data(self) -> List[Dict[str, Any]]:
+        now = time.time()
+        if self._valuation_cache is not None and (now - self._valuation_cache_time < 3600):
+            return self._valuation_cache
+        try:
+            data = self._get_data("valuation")
+            if isinstance(data, list):
+                self._valuation_cache = data
+                self._valuation_cache_time = now
+                return data
+        except Exception as e:
+            self.logger.debug(f"Could not load valuation data: {e}")
+        return []
+
     @staticmethod
     def _select_company_record(data: Any, ticker: str) -> Dict[str, Any]:
         if isinstance(data, dict):
@@ -78,14 +96,14 @@ class TWSEAdapter(DataProvider):
                 return TWSEAdapter._select_company_record(nested, ticker)
             if not data:
                 return {}
-            code_keys = ("公司代號", "公司代碼", "CompanyId", "company_id", "ticker", "stock_id")
+            code_keys = ("公司代號", "公司代碼", "CompanyId", "company_id", "ticker", "stock_id", "Code", "code")
             code = next((data[key] for key in code_keys if key in data), None)
             if code is None or str(code).strip() == ticker:
                 return data
             return {}
 
         if isinstance(data, list):
-            code_keys = ("公司代號", "公司代碼", "CompanyId", "company_id", "ticker", "stock_id")
+            code_keys = ("公司代號", "公司代碼", "CompanyId", "company_id", "ticker", "stock_id", "Code", "code")
             for row in data:
                 if not isinstance(row, dict):
                     continue
@@ -120,6 +138,22 @@ class TWSEAdapter(DataProvider):
 
         if not any((pl_data, bs_data, info_data, sh_data)):
             return {"ticker": ticker, "source": "twse", "error": "No TWSE data for ticker"}
+
+        val_records = self._get_valuation_data()
+        val_data = self._select_company_record(val_records, ticker)
+        if isinstance(info_data, dict) and val_data:
+            try:
+                info_data["pe"] = float(str(val_data.get("PEratio", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["pe"] = 0.0
+            try:
+                info_data["pb"] = float(str(val_data.get("PBratio", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["pb"] = 0.0
+            try:
+                info_data["yield"] = float(str(val_data.get("DividendYield", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["yield"] = 0.0
 
         normalized_data = {
             "ticker": ticker,

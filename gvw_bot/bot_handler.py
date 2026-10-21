@@ -28,6 +28,7 @@ from src.core.orchestrator import Orchestrator
 from src.analysis.intraday import run_intraday_monitoring
 from src.diagnostics.doctor import GVWDoctor
 from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
+from src.agent.maintenance_agent import MaintenanceAgent
 
 logger = logging.getLogger("gvw.bot")
 
@@ -51,6 +52,7 @@ BOT_COMMANDS = [
     {"command": "update", "description": "一鍵從 GitHub 拉取最新代碼並重啟服務"},
     {"command": "doctor", "description": "系統全方位健康診斷，/doctor fix 可執行自愈"},
     {"command": "fix", "description": "自主修復指定 Issue，例如 /fix #28"},
+    {"command": "maintain", "description": "切換系統維護模式，可直接用自然語言診斷資料與除錯"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -97,6 +99,7 @@ class TelegramBotHandler:
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
         doctor: Optional[GVWDoctor] = None,
         issue_solver: Optional[IssueSolver] = None,
+        maintenance_agent: Optional[MaintenanceAgent] = None,
     ):
         self.token = token or TELEGRAM_BOT_TOKEN
         self.scheduler = scheduler
@@ -107,10 +110,15 @@ class TelegramBotHandler:
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
         self.doctor = doctor or GVWDoctor(ai_provider_store=self.ai_provider_store)
         self.issue_solver = issue_solver or IssueSolver(ai_provider_store=self.ai_provider_store)
+        self.maintenance_agent = maintenance_agent or MaintenanceAgent(
+            ai_provider_store=self.ai_provider_store,
+            doctor=self.doctor,
+        )
         self.last_update_id = 0
         self.running = False
         self._updating = False
         self._fixing = False
+        self.maintenance_mode_chats: set = set()
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
 
     def send_message(
@@ -158,7 +166,7 @@ class TelegramBotHandler:
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
-            "/ai_local", "/update", "/doctor", "/fix",
+            "/ai_local", "/update", "/doctor", "/fix", "/maintain",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
@@ -342,6 +350,43 @@ class TelegramBotHandler:
             else:
                 issue_id = args[0]
                 self._trigger_issue_solver(chat_id, issue_id)
+
+        elif cmd == "/maintain":
+            if chat_id in self.maintenance_mode_chats:
+                self.maintenance_mode_chats.remove(chat_id)
+                self.send_message(
+                    chat_id,
+                    "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
+                )
+            else:
+                self.maintenance_mode_chats.add(chat_id)
+                self.send_message(
+                    chat_id,
+                    "🛠️ <b>已進入【系統維護模式】</b>\n\n"
+                    "在此模式下，您可以直接傳送任何自然語言問題，例如：\n"
+                    "• <i>為什麼 PB PE 股利 是空白的？</i>\n"
+                    "• <i>幫我看 2330 目前資料庫的狀態</i>\n"
+                    "• <i>檢查最近 TWSE 採集日誌是否有錯誤？</i>\n\n"
+                    "維護 Agent 會自己調用診斷工具、查閱資料庫與日誌並為您推理分析。\n"
+                    "輸入 <code>/maintain</code> 或 <code>/exit</code> 可隨時退出此模式。",
+                )
+
+        elif chat_id in self.maintenance_mode_chats:
+            user_msg = text.strip()
+            if user_msg.lower() in ["/exit", "exit", "退出", "離開"]:
+                self.maintenance_mode_chats.remove(chat_id)
+                self.send_message(
+                    chat_id,
+                    "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
+                )
+            else:
+                self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
+                threading.Thread(
+                    target=self._handle_maintenance_query,
+                    args=(chat_id, user_msg),
+                    daemon=True,
+                    name=f"GVWMaintenanceThread-{chat_id}",
+                ).start()
 
         elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
@@ -562,6 +607,14 @@ class TelegramBotHandler:
             name=f"GVWIssueSolverThread-{clean_id}",
         ).start()
 
+    def _handle_maintenance_query(self, chat_id: Union[int, str], question: str):
+        try:
+            answer = self.maintenance_agent.ask(question)
+            self.send_message(chat_id, f"🛠️ <b>【維護診斷報告】</b>\n\n{answer}")
+        except Exception as e:
+            logger.error(f"Maintenance agent query error: {e}", exc_info=True)
+            self.send_message(chat_id, f"❌ 診斷過程發生異常：<code>{html.escape(str(e))}</code>")
+
     def _is_owner(self, user_id: Optional[Union[int, str]]) -> bool:
         return bool(self.owner_user_id and str(user_id) == self.owner_user_id)
 
@@ -715,6 +768,7 @@ class TelegramBotHandler:
                         text.startswith("/")
                         or text in MENU_BUTTONS
                         or self.pending_analysis_chats.get(chat_id) == str(user_id or "")
+                        or chat_id in self.maintenance_mode_chats
                     ):
                         command = text.split()[0] if text.startswith("/") else text
                         self.handle_command(
