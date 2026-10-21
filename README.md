@@ -1,5 +1,9 @@
 # GVW Screener (Garrett Van Wagoner 台股量化選股與即時監控系統)
 
+> [!IMPORTANT]
+> **免責聲明 (Disclaimer)**：
+> 本專案為開源量化研究、演算法回測與技術探討工具，所有評分排名、指標篩選、盤中信號與 AI 分析內容僅供學術與技術參考，**絕不構成任何形式之投資建議、財務諮詢或買賣推薦**。股市交易具有高度風險，使用者應自行查證資料並評估風險，對於本系統產出之任何數據所做出之任何決策，均由使用者承擔全部責任。
+
 本專案是一套專為台灣股市設計的量化選股與盤中即時監控系統。核心理念結合了 **Garrett Van Wagoner (GVW) 高成長動能策略** 與 **Mark Minervini Stage 2 趨勢分析**，並整合多資料源自動容錯機制、自主排程引擎與 Telegram Bot 即時互動服務。
 
 ---
@@ -59,7 +63,7 @@ gvw_screener/
 
 ## ⏰ `gvw_bot` 內建自主排程機制
 
-啟動 `gvw_bot` 服務後，內建的 [`GVWScheduler`](file:///Users/da042300068/workspace/gvw_screener/gvw_bot/scheduler.py) 會在背景自動執行以下交易日排程（無需配置外部 cron）：
+啟動 `gvw_bot` 服務後，內建的 [`GVWScheduler`](gvw_bot/scheduler.py) 會在背景自動執行以下交易日排程（無需配置外部 cron）：
 
 | 任務名稱 | 觸發時間 (週一至五) | 動作說明 |
 | :--- | :--- | :--- |
@@ -81,7 +85,7 @@ gvw_screener/
 
 ### Hermes-Agent 監控接縫 (Health Monitoring)
 `hermes-agent` 僅需監控 `gvw_bot` 服務的存活與心跳：
-* **心跳檔案**：[`gvw_bot/heartbeat.json`](file:///Users/da042300068/workspace/gvw_screener/gvw_bot/heartbeat.json)（每 30 秒自動更新）
+* **心跳檔案**：[`gvw_bot/heartbeat.json`](gvw_bot/heartbeat.json)（每 30 秒自動更新）
 * **探針指令**：
   ```bash
   python main.py bot --status
@@ -120,7 +124,11 @@ $$\text{Final Score} = (\text{Momentum Rank} \times 40\%) + (\text{Trend Score} 
 ## 🚀 快速上手
 
 ### 1. 環境設定
-在專案根目錄建立 [`.env`](file:///Users/da042300068/workspace/gvw_screener/.env) 檔案：
+在專案根目錄複製樣板建立 `.env` 檔案（可參考 [`.env.example`](.env.example)）：
+```bash
+cp .env.example .env
+```
+
 ```ini
 # FinMind API Token (註冊等級可享每小時 600 次請求限額)
 FINMIND_TOKEN="您的172字元Token"
@@ -129,12 +137,20 @@ FINMIND_TOKEN="您的172字元Token"
 TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
 TELEGRAM_HOME_CHANNEL="-100123456789"
 
-# (可選) Telegram 個股 AI 分析；使用 OpenAI API，費用依帳戶用量計算
+# Telegram Bot 系統負責人（Telegram user ID；必填以啟用管理與申請審核）
+TELEGRAM_OWNER_USER_ID="您的Telegram User ID"
+
+# (可選) AI 分析師：第一優先雲端模型 (OpenAI)
 OPENAI_API_KEY="您的OpenAI API Key"
 OPENAI_MODEL="gpt-4o-mini"
 
-# Telegram Bot 系統負責人（Telegram user ID；必填以啟用管理與申請審核）
-TELEGRAM_OWNER_USER_ID="您的Telegram User ID"
+# (可選) AI 分析師：第二備援雲端模型 (Google AI Studio / Gemma)
+GEMINI_API_KEY="您的Google AI Studio API Key"
+GEMMA_MODEL="gemma-3-27b-it"
+
+# (可選) AI 分析師：第三地端保底模型 (LM-Studio / LocalAI)
+LOCAL_AI_BASE_URL="http://localhost:1234/v1"
+LOCAL_AI_MODEL="active"
 
 # (可選) 自訂資料儲存目錄，預設為專案目錄下的 data/
 GVW_DATA_DIR="./data"
@@ -246,3 +262,10 @@ Dependabot 每週檢查根目錄與 dashboard 的 Python 套件及 GitHub Action
 Workflow 僅對 `main` 的 push 和手動執行觸發部署，不會在 Pull Request 中執行 self-hosted runner。請保護 `main` 分支，並限制可修改 workflow 或合併程式碼的人員。
 
 若部署目錄沒有 `universe.json`，首次採集會從 TWSE 與 TPEx 官方 OpenAPI 載入上市及上櫃公司清單並保存。任一來源不可用或回傳無效資料時，採集工作會報錯，不會寫入不完整清單。
+
+---
+
+## 📄 開源授權 (License)
+
+本專案採用 [MIT License](LICENSE) 授權開源。
+
