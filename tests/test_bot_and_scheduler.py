@@ -12,6 +12,7 @@ from gvw_bot.bot_handler import PUBLIC_REPLY_KEYBOARD, REPLY_KEYBOARD, TelegramB
 from gvw_bot.scheduler import GVWScheduler, ScheduledJob
 from src.state.ai_access import AIAnalysisAccessStore
 from src.state.ai_provider import AIProviderPreferenceStore
+from src.state.alert_subscribers import AlertSubscriptionStore
 
 class TestBotAndScheduler(unittest.TestCase):
 
@@ -55,8 +56,8 @@ class TestBotAndScheduler(unittest.TestCase):
         with patch("gvw_bot.bot_handler.requests.post", return_value=response) as post:
             self.assertTrue(bot.send_message(123, "Menu"))
 
-        # Owner receives same clean public keyboard as regular users
-        self.assertEqual(post.call_args.kwargs["json"]["reply_markup"], PUBLIC_REPLY_KEYBOARD)
+        # Owner receives same clean keyboard layout as regular users (with AI analysis enabled)
+        self.assertEqual(post.call_args.kwargs["json"]["reply_markup"], REPLY_KEYBOARD)
 
     def test_command_menu_limits_system_commands_to_owner(self):
         bot = TelegramBotHandler(token="test-token", owner_user_id="123")
@@ -269,6 +270,78 @@ class TestBotAndScheduler(unittest.TestCase):
 
         rank.assert_called_once_with()
         self.assertIn("排名計算完成", bot.send_message.call_args.args[1])
+
+    def test_non_owner_can_run_report_and_top10(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        with patch("gvw_bot.bot_handler.generate_daily_report", return_value="Daily Report Content"):
+            bot.handle_command(20, "/report", "/report", user_id=20)
+            bot.handle_command(20, "/today", "/today", user_id=20)
+            bot.handle_command(20, "/top10", "/top10", user_id=20)
+            bot.handle_command(20, "🏆 Top 10 選股", "🏆 Top 10 選股", user_id=20)
+
+        self.assertEqual(bot.send_message.call_count, 8)
+        for call in bot.send_message.call_args_list:
+            self.assertNotIn("僅限系統負責人", call.args[1])
+
+    def test_toggle_monitor_subscribes_and_unsubscribes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            bot = TelegramBotHandler(token="test-token", alert_store=store)
+            bot.send_message = Mock()
+
+            # 1. Toggle ON
+            bot.handle_command(123, "/toggle_monitor", "/toggle_monitor", user_id=123)
+            self.assertTrue(store.is_subscribed(123))
+            self.assertIn("已開啟盤中監控", bot.send_message.call_args.args[1])
+
+            # 2. Toggle OFF via button text
+            bot.handle_command(123, "🔔 盤中監控 (on)", "🔔 盤中監控 (on)", user_id=123)
+            self.assertFalse(store.is_subscribed(123))
+            self.assertIn("已關閉盤中監控", bot.send_message.call_args.args[1])
+
+    def test_dynamic_keyboard_generation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            alert_store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            ai_store = AIAnalysisAccessStore(f"{temp_dir}/access.json")
+            bot = TelegramBotHandler(
+                token="test-token",
+                owner_user_id="10",
+                alert_store=alert_store,
+                ai_access_store=ai_store,
+            )
+
+            # Unapproved regular user (not subscribed)
+            kb = bot._keyboard_for_chat(20, user_id=20)
+            self.assertEqual(kb["keyboard"], [
+                ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+                ["📝 申請 AI 分析"],
+            ])
+
+            # Subscribed regular user
+            alert_store.subscribe(20)
+            kb = bot._keyboard_for_chat(20, user_id=20)
+            self.assertEqual(kb["keyboard"], [
+                ["🏆 Top 10 選股", "🔔 盤中監控 (on)"],
+                ["📝 申請 AI 分析"],
+            ])
+
+            # Approved user
+            ai_store.request(20, 20)
+            ai_store.decide(20, approved=True)
+            kb = bot._keyboard_for_chat(20, user_id=20)
+            self.assertEqual(kb["keyboard"], [
+                ["🏆 Top 10 選股", "🔔 盤中監控 (on)"],
+                ["🤖 AI 個股分析"],
+            ])
+
+            # Owner
+            kb = bot._keyboard_for_chat(10, user_id=10)
+            self.assertEqual(kb["keyboard"], [
+                ["🏆 Top 10 選股", "🔕 盤中監控 (off)"],
+                ["🤖 AI 個股分析"],
+            ])
 
     def test_only_owner_can_decide_an_ai_access_request(self):
         self.ai_store.request(20, 20, first_name="Applicant")
@@ -596,6 +669,27 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertEqual(periodic_sync.interval_minutes, 60)
         self.assertIsNotNone(periodic_sync.last_run)
         self.assertFalse(periodic_sync.should_run(datetime.now()))
+
+    def test_intraday_monitor_broadcasts_to_subscribers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            store.subscribe("100")
+            store.subscribe("200")
+
+            scheduler = GVWScheduler(heartbeat_mgr=self.hb, alert_store=store)
+            with (
+                patch("gvw_bot.scheduler.run_intraday_monitoring", return_value=["🚀 2330 突破!"]),
+                patch("gvw_bot.scheduler.send_telegram_message") as mock_send,
+            ):
+                scheduler.job_intraday_monitor()
+
+            calls = mock_send.call_args_list
+            home_calls = [c for c in calls if "chat_id" not in c.kwargs or c.kwargs["chat_id"] is None]
+            self.assertEqual(len(home_calls), 1)
+
+            sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}
+            self.assertIn("100", sub_targets)
+            self.assertIn("200", sub_targets)
 
 if __name__ == "__main__":
     unittest.main()
