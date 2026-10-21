@@ -1,8 +1,10 @@
 import os
+import time
 import logging
 import tempfile
+import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 from gvw_bot.heartbeat import HeartbeatManager
 from gvw_bot.main import CredentialRedactionFilter
@@ -381,6 +383,95 @@ class TestBotAndScheduler(unittest.TestCase):
         # Should not run immediately after
         self.assertFalse(job.should_run(now))
 
+    def test_job_trigger_logic_daily_time(self):
+        job = ScheduledJob(
+            name="daily_test",
+            func=lambda: True,
+            daily_time="14:00",
+            weekdays_only=True,
+            grace_minutes=30
+        )
+        # Wednesday 13:59:00: before target time
+        t_before = datetime(2026, 10, 21, 13, 59, 0)
+        self.assertFalse(job.should_run(t_before))
+
+        # Wednesday 14:00:00: target time
+        t_exact = datetime(2026, 10, 21, 14, 0, 0)
+        self.assertTrue(job.should_run(t_exact))
+
+        # Wednesday 14:15:00: within grace window (not yet run today)
+        t_grace = datetime(2026, 10, 21, 14, 15, 0)
+        self.assertTrue(job.should_run(t_grace))
+
+        # If already run earlier today: should not run
+        job.last_run = datetime(2026, 10, 21, 14, 0, 10)
+        self.assertFalse(job.should_run(t_grace))
+
+        # Wednesday 14:31:00: past grace window
+        job.last_run = None
+        t_past = datetime(2026, 10, 21, 14, 31, 0)
+        self.assertFalse(job.should_run(t_past))
+
+        # Saturday 14:10:00: weekend with weekdays_only=True
+        t_weekend = datetime(2026, 10, 24, 14, 10, 0)
+        self.assertFalse(job.should_run(t_weekend))
+
+    def test_job_is_running_guard(self):
+        job = ScheduledJob(
+            name="test_guard",
+            func=lambda: True,
+            interval_minutes=5,
+            weekdays_only=False
+        )
+        now = datetime.now()
+        self.assertTrue(job.should_run(now))
+
+        job.is_running = True
+        self.assertFalse(job.should_run(now))
+
+    def test_trigger_job_async_execution(self):
+        scheduler = GVWScheduler(heartbeat_mgr=self.hb)
+        executed = threading.Event()
+
+        def fake_job():
+            executed.set()
+
+        job = ScheduledJob(name="async_job", func=fake_job, interval_minutes=5)
+        triggered = scheduler.trigger_job_async(job)
+        self.assertTrue(triggered)
+        self.assertTrue(executed.wait(timeout=2.0))
+        # Small wait for thread to finish finally block
+        time.sleep(0.05)
+        self.assertFalse(job.is_running)
+        self.assertIsNotNone(job.last_run)
+
+    def test_trigger_job_async_handles_exception(self):
+        scheduler = GVWScheduler(heartbeat_mgr=self.hb)
+        failed = threading.Event()
+
+        def bad_job():
+            failed.set()
+            raise RuntimeError("Job crash")
+
+        job = ScheduledJob(name="failing_job", func=bad_job, interval_minutes=5)
+        triggered = scheduler.trigger_job_async(job)
+        self.assertTrue(triggered)
+        self.assertTrue(failed.wait(timeout=2.0))
+        time.sleep(0.05)
+        self.assertFalse(job.is_running)
+        self.assertEqual(self.hb.jobs_status["failing_job"]["status"], "error")
+
+    def test_jobs_command_shows_status(self):
+        scheduler = GVWScheduler(heartbeat_mgr=self.hb)
+        bot = TelegramBotHandler(token="test-token", scheduler=scheduler)
+        bot.send_message = Mock()
+        bot.handle_command(123, "/jobs", "/jobs", user_id=123)
+        bot.send_message.assert_called_once()
+        msg = bot.send_message.call_args.args[1]
+        self.assertIn("intraday_monitor", msg)
+        self.assertIn("daily_collection", msg)
+        self.assertIn("尚未執行", msg)
+
     def test_scheduler_jobs_setup(self):
         scheduler = GVWScheduler(heartbeat_mgr=self.hb)
         job_names = [j.name for j in scheduler.jobs]
@@ -388,8 +479,18 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("daily_collection", job_names)
         self.assertIn("daily_ranking", job_names)
         self.assertIn("daily_report", job_names)
+        self.assertIn("morning_briefing", job_names)
+
+        daily_collection = next(job for job in scheduler.jobs if job.name == "daily_collection")
+        self.assertEqual(daily_collection.grace_minutes, 45)
+
+        daily_report = next(job for job in scheduler.jobs if job.name == "daily_report")
+        self.assertEqual(daily_report.grace_minutes, 60)
+
         periodic_sync = next(job for job in scheduler.jobs if job.name == "periodic_sync")
         self.assertEqual(periodic_sync.interval_minutes, 60)
+        self.assertIsNotNone(periodic_sync.last_run)
+        self.assertFalse(periodic_sync.should_run(datetime.now()))
 
 if __name__ == "__main__":
     unittest.main()

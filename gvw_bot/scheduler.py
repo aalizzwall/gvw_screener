@@ -3,7 +3,7 @@ import sys
 import time
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, Any, List, Optional
 
 # Ensure parent directory is in path so we can import src.*
@@ -29,7 +29,8 @@ class ScheduledJob:
         interval_minutes: Optional[int] = None,
         daily_time: Optional[str] = None,  # "HH:MM"
         weekdays_only: bool = True,
-        active_hours: Optional[tuple] = None # (start_hour, end_hour)
+        active_hours: Optional[tuple] = None, # (start_hour, end_hour)
+        grace_minutes: int = 30
     ):
         self.name = name
         self.func = func
@@ -37,9 +38,14 @@ class ScheduledJob:
         self.daily_time = daily_time
         self.weekdays_only = weekdays_only
         self.active_hours = active_hours
+        self.grace_minutes = grace_minutes
         self.last_run: Optional[datetime] = None
+        self.is_running: bool = False
 
     def should_run(self, now: datetime) -> bool:
+        if self.is_running:
+            return False
+
         if self.weekdays_only and now.weekday() >= 5:
             # 5 = Saturday, 6 = Sunday
             return False
@@ -52,7 +58,9 @@ class ScheduledJob:
 
         if self.daily_time:
             target_h, target_m = map(int, self.daily_time.split(":"))
-            if now.hour == target_h and now.minute == target_m:
+            target_dt = now.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
+            grace_end = target_dt + timedelta(minutes=self.grace_minutes)
+            if target_dt <= now < grace_end:
                 if self.last_run is None or self.last_run.date() != now.date():
                     return True
             return False
@@ -94,7 +102,8 @@ class GVWScheduler:
             name="daily_collection",
             func=self.job_daily_collection,
             daily_time="14:00",
-            weekdays_only=True
+            weekdays_only=True,
+            grace_minutes=45
         ))
 
         # 3. Daily Ranking Analysis: Weekdays at 15:00
@@ -102,7 +111,8 @@ class GVWScheduler:
             name="daily_ranking",
             func=self.job_daily_ranking,
             daily_time="15:00",
-            weekdays_only=True
+            weekdays_only=True,
+            grace_minutes=30
         ))
 
         # 4. Daily Post-Market Report: Weekdays at 15:30
@@ -110,7 +120,8 @@ class GVWScheduler:
             name="daily_report",
             func=self.job_daily_report,
             daily_time="15:30",
-            weekdays_only=True
+            weekdays_only=True,
+            grace_minutes=60
         ))
 
         # 5. Daily Pre-Market Morning Summary: Weekdays at 08:30
@@ -118,16 +129,20 @@ class GVWScheduler:
             name="morning_briefing",
             func=self.job_morning_briefing,
             daily_time="08:30",
-            weekdays_only=True
+            weekdays_only=True,
+            grace_minutes=30
         ))
 
         # 6. Periodic Oldest-First Sync: Every 60 minutes (always running)
-        self.jobs.append(ScheduledJob(
+        # Initialize last_run to now so it does not hog resources immediately upon boot
+        periodic_sync = ScheduledJob(
             name="periodic_sync",
             func=self.job_periodic_sync,
             interval_minutes=60,
             weekdays_only=False
-        ))
+        )
+        periodic_sync.last_run = datetime.now()
+        self.jobs.append(periodic_sync)
 
     # --- Job Implementations ---
 
@@ -168,7 +183,39 @@ class GVWScheduler:
         stats = self.orchestrator.run_collection_cycle(batch_ratio=0.1, force=False)
         self.hb.update_job_status("periodic_sync", "ok", message=f"Sync stats: {stats}")
 
-    # --- Scheduler Loop ---
+    # --- Scheduler Execution and Loop ---
+
+    def _execute_job(self, job: ScheduledJob):
+        logger.info(f"Started scheduled job: {job.name}")
+        try:
+            job.func()
+            logger.info(f"Finished scheduled job: {job.name}")
+        except Exception as e:
+            logger.error(f"Error executing job {job.name}: {e}", exc_info=True)
+            self.hb.update_job_status(job.name, "error", message=str(e))
+        finally:
+            job.is_running = False
+
+    def trigger_job_async(self, job: ScheduledJob, now: Optional[datetime] = None) -> bool:
+        if job.is_running:
+            logger.warning(f"Job {job.name} is already running. Skipping trigger.")
+            return False
+        job.last_run = now or datetime.now()
+        job.is_running = True
+        try:
+            t = threading.Thread(
+                target=self._execute_job,
+                args=(job,),
+                name=f"GVWJob-{job.name}",
+                daemon=True
+            )
+            t.start()
+            return True
+        except Exception as e:
+            job.is_running = False
+            logger.error(f"Error starting job thread for {job.name}: {e}", exc_info=True)
+            self.hb.update_job_status(job.name, "error", message=str(e))
+            return False
 
     def start(self):
         if self.running:
@@ -185,7 +232,7 @@ class GVWScheduler:
         logger.info("GVW Background Scheduler stopped.")
 
     def _run_loop(self):
-        last_hb_time = 0
+        last_hb_time = 0.0
         while self.running:
             now = datetime.now()
 
@@ -201,10 +248,8 @@ class GVWScheduler:
                 try:
                     if job.should_run(now):
                         logger.info(f"Triggering scheduled job: {job.name}")
-                        job.last_run = now
-                        job.func()
+                        self.trigger_job_async(job, now=now)
                 except Exception as e:
-                    logger.error(f"Error executing job {job.name}: {e}", exc_info=True)
-                    self.hb.update_job_status(job.name, "error", message=str(e))
+                    logger.error(f"Error checking job {job.name}: {e}", exc_info=True)
 
             time.sleep(10)
