@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
+from src.providers.yahoo_adapter import TickerNotFoundError
 from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
 from src.config import (
     TTL_HIGH_SCORE,
@@ -14,6 +15,7 @@ from src.config import (
 
 logger = logging.getLogger(__name__)
 PRICE_TTL_HOURS = 1
+YAHOO_NOT_FOUND_THRESHOLD = 3
 
 class Orchestrator:
     """
@@ -103,6 +105,10 @@ class Orchestrator:
         existing_data = self.state.get_stock_data(ticker)
         health = (health_status or self.state.get_health_status()).get(ticker, {})
 
+        if not force and health.get('status') == 'dead':
+            logger.info("⏭️  Skipping dead ticker %s; use force to retry.", ticker)
+            return "SKIP"
+
         retry_after = health.get("retry_after")
         if not force and retry_after and self._parse_timestamp(retry_after) > datetime.now():
             logger.info("⏭️  Skipping %s until provider retry time %s.", ticker, retry_after)
@@ -123,7 +129,15 @@ class Orchestrator:
 
         logger.info(f"[TRACK] Fetching data for {ticker} ({name})...")
         new_data = self.factory.fetch_all_data(ticker) if financials_due else None
-        prices = self.factory.fetch_price_history(ticker, days=365) if prices_due else []
+        yahoo_not_found = False
+        if prices_due:
+            try:
+                prices = self.factory.fetch_price_history(ticker, days=365)
+            except TickerNotFoundError:
+                prices = []
+                yahoo_not_found = True
+        else:
+            prices = []
         now = datetime.now().isoformat()
         financials_updated = bool(financials_due and new_data and not new_data.get('error'))
         prices_updated = bool(prices_due and prices)
@@ -168,7 +182,12 @@ class Orchestrator:
         if financials_ok and prices_ok:
             existing_data['updated_at'] = now
             self.state.update_stock_health(
-                ticker, {'failures': 0, 'status': 'healthy', 'retry_after': None}
+                ticker, {
+                    'failures': 0,
+                    'status': 'healthy',
+                    'retry_after': None,
+                    'yahoo_not_found_count': 0,
+                }
             )
             logger.info("✅ %s - Due data refreshed successfully.", ticker)
             result = "SUCCESS"
@@ -180,6 +199,7 @@ class Orchestrator:
                     'failures': current_failures,
                     'status': 'degraded',
                     'retry_after': None,
+                    'yahoo_not_found_count': 0,
                 }
             )
             logger.warning(
@@ -190,13 +210,31 @@ class Orchestrator:
         else:
             current_failures = health.get('failures', 0) + 1
             backoff_hours = min(2 ** min(current_failures - 1, 5), 24)
-            retry_after = (datetime.now() + timedelta(hours=backoff_hours)).isoformat()
+            not_found_count = (
+                min(health.get('yahoo_not_found_count', 0) + 1, YAHOO_NOT_FOUND_THRESHOLD)
+                if yahoo_not_found else 0
+            )
+            is_dead = not_found_count >= YAHOO_NOT_FOUND_THRESHOLD
+            retry_after = (
+                None if is_dead
+                else (datetime.now() + timedelta(hours=backoff_hours)).isoformat()
+            )
             self.state.update_stock_health(ticker, {
                 'failures': current_failures,
-                'status': 'degraded',
+                'status': 'dead' if is_dead else 'degraded',
                 'retry_after': retry_after,
+                'yahoo_not_found_count': not_found_count,
             })
-            logger.warning("❌ %s - All data providers failed (Failures: %s).", ticker, current_failures)
+            if is_dead:
+                logger.warning(
+                    "❌ %s - Marked dead after %s consecutive Yahoo 404 checks.",
+                    ticker, not_found_count,
+                )
+            else:
+                logger.warning(
+                    "❌ %s - All data providers failed (Failures: %s).",
+                    ticker, current_failures,
+                )
             result = "FAIL"
 
         self.state.save_stock_data(ticker, existing_data)
@@ -236,7 +274,10 @@ class Orchestrator:
         for t, _ in all_stocks:
             if len(target_batch) >= num_to_update:
                 break
-            retry_after = health_status.get(t, {}).get('retry_after')
+            health = health_status.get(t, {})
+            if not force and health.get('status') == 'dead':
+                continue
+            retry_after = health.get('retry_after')
             if retry_after and self._parse_timestamp(retry_after) > datetime.now():
                 continue
             target_batch.append(t)

@@ -4,7 +4,7 @@ import requests
 from typing import Dict, Any, List, Optional
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.finmind_adapter import FinMindAdapter
-from src.providers.yahoo_adapter import YahooAdapter
+from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,7 @@ class DataProviderFactory:
         Fetch historical price/K-line data.
         Tries FinMind first, falls back to Yahoo Finance.
         """
+        yahoo_not_found = None
         for name, provider in (("FinMind", self.finmind), ("Yahoo Finance", self.yahoo)):
             try:
                 prices = self._valid_price_history(
@@ -142,9 +143,14 @@ class DataProviderFactory:
                 if prices:
                     return prices
                 logger.warning("[FACTORY] %s returned no usable prices for %s", name, ticker)
+            except TickerNotFoundError as e:
+                yahoo_not_found = e
+                logger.warning("[FACTORY] Yahoo confirmed missing market symbols for %s", ticker)
             except Exception as e:
                 logger.warning("[FACTORY] %s price history failed for %s: %s", name, ticker, e)
 
+        if yahoo_not_found:
+            raise yahoo_not_found
         return []
 
     def fetch_market_index(self, index_ticker: str = "TWII") -> Dict[str, Any]:

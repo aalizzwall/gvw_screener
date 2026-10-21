@@ -4,10 +4,11 @@ from datetime import datetime
 from types import ModuleType
 from unittest.mock import patch
 
+import requests
 from src.core.orchestrator import Orchestrator
 from src.providers.factory import DataProviderFactory
 from src.providers.twse_adapter import TWSEAdapter
-from src.providers.yahoo_adapter import YahooAdapter
+from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
 
 
 class FakeState:
@@ -59,6 +60,115 @@ class FakeFactory:
 
 
 class ProviderResilienceTests(unittest.TestCase):
+    def test_yahoo_tries_otc_symbol_after_twse_symbol_returns_404(self):
+        not_found = unittest.mock.Mock(status_code=404)
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [datetime(2026, 10, 16, 12).timestamp()],
+                    "indicators": {
+                        "quote": [{
+                            "open": [100], "high": [105], "low": [99],
+                            "close": [103], "volume": [1000],
+                        }]
+                    },
+                }],
+                "error": None,
+            }
+        }
+        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found.raise_for_status.return_value = None
+        adapter = YahooAdapter()
+
+        with patch("src.providers.yahoo_adapter.requests.get", side_effect=[not_found, found]) as get:
+            prices = adapter.fetch_price_history("6488", days=30)
+
+        self.assertEqual(len(prices), 1)
+        self.assertEqual(prices[0]["close"], 103)
+        self.assertIn("6488.TW", get.call_args_list[0].args[0])
+        self.assertIn("6488.TWO", get.call_args_list[1].args[0])
+
+    def test_yahoo_reports_missing_only_after_both_market_symbols_return_404(self):
+        not_found = unittest.mock.Mock(status_code=404)
+        adapter = YahooAdapter()
+
+        with patch(
+            "src.providers.yahoo_adapter.requests.get",
+            side_effect=[not_found, not_found],
+        ):
+            with self.assertRaises(TickerNotFoundError):
+                adapter.fetch_price_history("6488", days=30)
+
+    def test_factory_preserves_confirmed_yahoo_missing_result(self):
+        twse = unittest.mock.Mock()
+        finmind = unittest.mock.Mock()
+        yahoo = unittest.mock.Mock()
+        finmind.fetch_price_history.return_value = []
+        yahoo.fetch_price_history.side_effect = TickerNotFoundError("6488")
+        factory = DataProviderFactory(twse, finmind, yahoo)
+
+        with self.assertRaises(TickerNotFoundError):
+            factory.fetch_price_history("6488", days=30)
+
+    def test_yahoo_transient_failure_does_not_report_missing_ticker(self):
+        not_found = unittest.mock.Mock(status_code=404)
+        adapter = YahooAdapter()
+
+        with patch(
+            "src.providers.yahoo_adapter.requests.get",
+            side_effect=[not_found, requests.ConnectionError("temporary network failure")],
+        ):
+            self.assertEqual(adapter.fetch_price_history("6488", days=30), [])
+
+    def test_persistent_yahoo_404_marks_ticker_dead_and_allows_forced_retry(self):
+        class MissingTickerFactory(FakeFactory):
+            def fetch_all_data(self, ticker):
+                self.stock_calls += 1
+                return None
+
+            def fetch_price_history(self, ticker, days=365):
+                self.price_calls += 1
+                raise TickerNotFoundError(ticker)
+
+        state = FakeState()
+        factory = MissingTickerFactory(None, [])
+        orchestrator = Orchestrator(state_manager=state, provider_factory=factory)
+
+        for _ in range(3):
+            self.assertEqual(
+                orchestrator.update_stock("6488", force=True, health_status=state.health),
+                "FAIL",
+            )
+
+        self.assertEqual(state.health["6488"]["status"], "dead")
+        self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
+        self.assertEqual(
+            orchestrator.update_stock("6488", health_status=state.health),
+            "SKIP",
+        )
+        self.assertEqual(factory.stock_calls, 3)
+        self.assertEqual(factory.price_calls, 3)
+        self.assertEqual(
+            orchestrator.update_stock("6488", force=True, health_status=state.health),
+            "FAIL",
+        )
+        self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
+        self.assertEqual(factory.stock_calls, 4)
+
+    def test_transient_collection_failures_do_not_mark_ticker_dead(self):
+        state = FakeState()
+        factory = FakeFactory(None, [])
+        orchestrator = Orchestrator(state_manager=state, provider_factory=factory)
+
+        for _ in range(3):
+            self.assertEqual(
+                orchestrator.update_stock("6488", force=True, health_status=state.health),
+                "FAIL",
+            )
+
+        self.assertEqual(state.health["6488"]["status"], "degraded")
+        self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 0)
+
     def test_empty_universe_is_initialized_and_persisted(self):
         state = FakeState()
         orchestrator = Orchestrator(state_manager=state, provider_factory=FakeFactory({}, []))
@@ -195,7 +305,26 @@ class ProviderResilienceTests(unittest.TestCase):
 
         fake_yfinance = ModuleType("yfinance")
         fake_yfinance.Ticker = lambda symbol: FakeTicker()
-        with patch.dict(sys.modules, {"yfinance": fake_yfinance}):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [datetime(2026, 10, 16, 12).timestamp()],
+                    "meta": {"gmtoffset": 0},
+                    "indicators": {
+                        "quote": [{
+                            "open": [2400], "high": [2450], "low": [2390],
+                            "close": [2420], "volume": [100],
+                        }]
+                    },
+                }],
+                "error": None,
+            }
+        }
+        response = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        response.raise_for_status.return_value = None
+        with patch.dict(sys.modules, {"yfinance": fake_yfinance}), patch(
+            "src.providers.yahoo_adapter.requests.get", return_value=response
+        ):
             adapter = YahooAdapter()
             prices = adapter.fetch_price_history("2330", days=30)
             fundamentals = adapter.fetch_stock_data("2330")

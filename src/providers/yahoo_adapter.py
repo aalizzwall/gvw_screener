@@ -1,12 +1,17 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterable, Dict, List, Optional
 
 import aiohttp
+import requests
 
 from src.interfaces.data_provider import DataProvider
+
+
+class TickerNotFoundError(Exception):
+    """Raised when Yahoo confirms every supported market symbol is missing."""
 
 
 class YahooAdapter(DataProvider):
@@ -32,39 +37,80 @@ class YahooAdapter(DataProvider):
             return 0.0
 
     def fetch_price_history(self, ticker: str, days: int = 365) -> List[Dict[str, Any]]:
-        import yfinance as yf
-
+        not_found_count = 0
         for symbol in self._symbols(ticker):
             try:
-                history = yf.Ticker(symbol).history(
-                    period=f"{max(days, 1)}d",
-                    interval="1d",
-                    auto_adjust=False,
+                response = requests.get(
+                    self.CHART_URL.format(symbol=symbol),
+                    params={"range": f"{max(days, 1)}d", "interval": "1d"},
+                    timeout=20,
                 )
-            except Exception as exc:
+            except requests.RequestException as exc:
                 self.logger.warning("Yahoo price history failed for %s: %s", symbol, exc)
                 continue
 
-            if history is None or history.empty:
+            if response.status_code == 404:
+                not_found_count += 1
                 continue
 
+            try:
+                response.raise_for_status()
+                payload = response.json()
+            except (requests.RequestException, ValueError, AttributeError) as exc:
+                self.logger.warning("Yahoo price history failed for %s: %s", symbol, exc)
+                continue
+
+            chart = payload.get("chart") if isinstance(payload, dict) else None
+            results = chart.get("result") if isinstance(chart, dict) else None
+            if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+                self.logger.warning("Yahoo returned no usable chart data for %s", symbol)
+                continue
+
+            result = results[0]
+            timestamps = result.get("timestamp") or []
+            indicators = result.get("indicators")
+            quotes = indicators.get("quote") if isinstance(indicators, dict) else None
+            if not isinstance(quotes, list) or not quotes or not isinstance(quotes[0], dict):
+                self.logger.warning("Yahoo returned no quote data for %s", symbol)
+                continue
+            quote = quotes[0]
+            metadata = result.get("meta")
+            offset = metadata.get("gmtoffset", 0) if isinstance(metadata, dict) else 0
+            try:
+                offset = int(offset)
+            except (TypeError, ValueError, OverflowError):
+                offset = 0
+            exchange_timezone = timezone(timedelta(seconds=offset))
             prices = []
-            for date, row in history.iterrows():
-                close = self._number(row.get("Close"))
+            for index, timestamp in enumerate(timestamps):
+                try:
+                    date = datetime.fromtimestamp(
+                        timestamp, exchange_timezone
+                    ).strftime("%Y-%m-%d")
+                except (OverflowError, OSError, TypeError, ValueError):
+                    continue
+                close_values = quote.get("close") or []
+                close = self._number(close_values[index]) if index < len(close_values) else 0
                 if close <= 0:
                     continue
-                prices.append({
-                    "date": date.strftime("%Y-%m-%d"),
-                    "open": self._number(row.get("Open")),
-                    "high": self._number(row.get("High")),
-                    "low": self._number(row.get("Low")),
+                price = {
+                    "date": date,
                     "close": close,
-                    "volume": int(self._number(row.get("Volume"))),
+                    "volume": int(self._number(
+                        (quote.get("volume") or [])[index]
+                        if index < len(quote.get("volume") or []) else 0
+                    )),
                     "source": "yahoo_finance",
-                })
-
+                }
+                for field in ("open", "high", "low"):
+                    values = quote.get(field) or []
+                    price[field] = self._number(values[index]) if index < len(values) else 0
+                prices.append(price)
             if prices:
                 return sorted(prices, key=lambda item: item["date"])
+
+        if not_found_count == len(self._symbols(ticker)):
+            raise TickerNotFoundError(ticker)
         return []
 
     def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
