@@ -17,6 +17,7 @@ class TestAIAnalyst(unittest.TestCase):
         for target, value in (
             ("src.analysis.ai_analyst.GEMINI_API_KEY", ""),
             ("src.analysis.ai_analyst.OPENAI_API_KEY", ""),
+            ("src.analysis.ai_analyst.LOCAL_AI_BASE_URL", ""),
         ):
             patcher = patch(target, value)
             patcher.start()
@@ -251,10 +252,52 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertEqual(report, "只有 Gemma")
         post.assert_called_once()
 
+    def test_falls_back_to_local_when_cloud_providers_fail(self):
+        responses = [
+            self._http_error(429),  # OpenAI fails
+            self._http_error(503),  # Gemma fails
+            self._ok_response("地端 Qwen 3.6 9B 保底成功"),  # Local succeeds
+        ]
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.LOCAL_AI_BASE_URL", "http://192.168.1.50:1234/v1"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key")
+
+        self.assertEqual(report, "地端 Qwen 3.6 9B 保底成功")
+        self.assertEqual(post.call_count, 3)
+        third_call = post.call_args_list[2]
+        self.assertIn("192.168.1.50:1234/v1/chat/completions", third_call.args[0])
+        self.assertEqual(third_call.kwargs["json"]["model"], "active")
+
+    def test_local_ai_detects_active_model_from_lm_studio(self):
+        self.provider_store.set_chain(["local/active"])
+        models_resp = Mock(status_code=200)
+        models_resp.json.return_value = {"data": [{"id": "qwen-3.6-9b-instruct"}]}
+
+        with (
+            patch("src.analysis.ai_analyst.LOCAL_AI_BASE_URL", "http://localhost:1234/v1"),
+            patch("src.analysis.ai_analyst.requests.get", return_value=models_resp) as get,
+            patch(
+                "src.analysis.ai_analyst.requests.post",
+                return_value=self._ok_response("Qwen 產出分析"),
+            ) as post,
+        ):
+            report = analyze_stock("2330", self.state)
+
+        self.assertEqual(report, "Qwen 產出分析")
+        get.assert_called_once()
+        self.assertIn("http://localhost:1234/v1/models", get.call_args.args[0])
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen-3.6-9b-instruct")
+
     def test_check_providers_reports_each_provider_health(self):
         with (
             patch("src.analysis.ai_analyst.OPENAI_API_KEY", "oa-key"),
             patch("src.analysis.ai_analyst.GEMINI_API_KEY", ""),
+            patch("src.analysis.ai_analyst.LOCAL_AI_BASE_URL", ""),
             patch(
                 "src.analysis.ai_analyst.requests.post",
                 return_value=self._http_error(429),
@@ -263,12 +306,15 @@ class TestAIAnalyst(unittest.TestCase):
             results = check_providers()
 
         self.assertEqual(
-            [r["entry"] for r in results], ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it"]
+            [r["entry"] for r in results],
+            ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it", "local/active"],
         )
         self.assertFalse(results[0]["ok"])
         self.assertEqual(results[0]["detail"], "HTTP 429")
         self.assertFalse(results[1]["ok"])
         self.assertIn("GEMINI_API_KEY", results[1]["detail"])
+        self.assertFalse(results[2]["ok"])
+        self.assertIn("LOCAL_AI_BASE_URL", results[2]["detail"])
 
 
 class TestAIProviderPreferenceStore(unittest.TestCase):
@@ -276,11 +322,28 @@ class TestAIProviderPreferenceStore(unittest.TestCase):
     def test_defaults_then_persists_owner_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            self.assertEqual(store.get_chain(), ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it"])
+            self.assertEqual(
+                store.get_chain(),
+                ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it", "local/active"],
+            )
 
             store.set_chain(["gemma/gemma-3-27b-it", "openai/gpt-4o", "gemma/gemma-3-27b-it"])
             reloaded = AIProviderPreferenceStore(store.path)
             self.assertEqual(reloaded.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o"])
+
+    def test_local_base_url_persistence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            self.assertEqual(store.get_local_base_url(), "http://localhost:1234/v1")
+
+            updated = store.set_local_base_url("http://192.168.1.88:1234/v1")
+            self.assertEqual(updated, "http://192.168.1.88:1234/v1")
+
+            reloaded = AIProviderPreferenceStore(store.path)
+            self.assertEqual(reloaded.get_local_base_url(), "http://192.168.1.88:1234/v1")
+
+            with self.assertRaises(ValueError):
+                store.set_local_base_url("invalid-url")
 
     def test_add_remove_and_whitelist_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,7 +368,7 @@ class TestAIProviderPreferenceStore(unittest.TestCase):
                 f.write('{"primary": "gemma"}')
             self.assertEqual(
                 AIProviderPreferenceStore(path).get_chain(),
-                ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini"],
+                ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini", "local/active"],
             )
 
 

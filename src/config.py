@@ -88,5 +88,18 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
 GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma-3-27b-it")
 
+# Local AI / LM-Studio Configuration (LAN OpenAI-compatible endpoint)
+LOCAL_AI_BASE_URL = (
+    os.environ.get("LOCAL_AI_BASE_URL")
+    or os.environ.get("LM_STUDIO_BASE_URL")
+    or "http://localhost:1234/v1"
+)
+LOCAL_AI_API_KEY = os.environ.get("LOCAL_AI_API_KEY") or "lm-studio"
+LOCAL_AI_MODEL = (
+    os.environ.get("LOCAL_AI_MODEL")
+    or os.environ.get("LM_STUDIO_MODEL")
+    or "active"
+)
+
 # Owner-selected primary AI provider ("openai" or "gemma"); the other is the fallback
 AI_PROVIDER_FILE = os.environ.get("GVW_AI_PROVIDER_FILE", os.path.join(DATA_DIR, "ai_provider.json"))

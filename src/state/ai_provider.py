@@ -1,38 +1,55 @@
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from src.config import AI_PROVIDER_FILE, GEMMA_MODEL, OPENAI_MODEL
+from src.config import (
+    AI_PROVIDER_FILE,
+    GEMMA_MODEL,
+    LOCAL_AI_BASE_URL,
+    LOCAL_AI_MODEL,
+    OPENAI_MODEL,
+)
 
-PROVIDER_NAMES = ("openai", "gemma")
+PROVIDER_NAMES = ("openai", "gemma", "local")
+PROVIDER_ALIASES = {"lmstudio": "local", "lm-studio": "local"}
 
 # Models the owner may select, per provider. Strongest first. The models configured
-# through OPENAI_MODEL / GEMMA_MODEL are always allowed as well.
+# through OPENAI_MODEL / GEMMA_MODEL / LOCAL_AI_MODEL are always allowed as well.
 _BUILTIN_MODELS: Dict[str, List[str]] = {
     "openai": ["gpt-4.1", "gpt-4o", "gpt-4.1-mini", "gpt-4o-mini"],
     "gemma": ["gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"],
+    "local": ["active", "qwen-3.6-9b", "qwen2.5-7b", "llama-3.2-3b"],
 }
 
 
 def model_catalog() -> Dict[str, List[str]]:
     catalog = {name: list(models) for name, models in _BUILTIN_MODELS.items()}
-    for name, configured in (("openai", OPENAI_MODEL), ("gemma", GEMMA_MODEL)):
+    for name, configured in (
+        ("openai", OPENAI_MODEL),
+        ("gemma", GEMMA_MODEL),
+        ("local", LOCAL_AI_MODEL),
+    ):
         if configured and configured not in catalog[name]:
             catalog[name].append(configured)
     return catalog
 
 
 def default_chain() -> List[str]:
-    return [f"openai/{OPENAI_MODEL}", f"gemma/{GEMMA_MODEL}"]
+    return [
+        f"openai/{OPENAI_MODEL}",
+        f"gemma/{GEMMA_MODEL}",
+        f"local/{LOCAL_AI_MODEL}",
+    ]
 
 
 def parse_entry(entry: str) -> Tuple[str, str]:
     """Validate a ``provider/model`` entry against the whitelist and return its parts."""
     provider, sep, model = str(entry).strip().partition("/")
     provider = provider.lower()
+    provider = PROVIDER_ALIASES.get(provider, provider)
     if not sep or provider not in PROVIDER_NAMES:
         raise ValueError(f"格式應為 provider/model，provider 僅支援：{', '.join(PROVIDER_NAMES)}")
-    if model not in model_catalog()[provider]:
+    if provider != "local" and model not in model_catalog()[provider]:
         raise ValueError(f"{provider} 不支援 model：{model}（可用 /ai_models 查看）")
     return provider, model
 
@@ -109,11 +126,37 @@ class AIProviderPreferenceStore:
             raise ValueError(f"不能移除最後一個 provider/model（{removed}）。")
         return self.set_chain(chain)
 
-    def _save(self, data: Dict[str, List[str]]) -> None:
+    def get_local_base_url(self) -> str:
+        try:
+            with open(self.path, "r", encoding="utf-8") as state_file:
+                data = json.load(state_file)
+                if isinstance(data, dict) and data.get("local_base_url"):
+                    return str(data["local_base_url"]).strip()
+        except (FileNotFoundError, ValueError):
+            pass
+        return LOCAL_AI_BASE_URL
+
+    def set_local_base_url(self, url: str) -> str:
+        cleaned = str(url).strip()
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError("網址格式錯誤，必須以 http:// 或 https:// 開頭")
+        self._save({"local_base_url": cleaned})
+        return cleaned
+
+    def _save(self, updates: Dict[str, Any]) -> None:
+        current = {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as state_file:
+                loaded = json.load(state_file)
+                if isinstance(loaded, dict):
+                    current = loaded
+        except (FileNotFoundError, ValueError):
+            current = {}
+        current.update(updates)
         parent = os.path.dirname(self.path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         temp_path = f"{self.path}.tmp"
         with open(temp_path, "w", encoding="utf-8") as state_file:
-            json.dump(data, state_file, ensure_ascii=False, indent=2)
+            json.dump(current, state_file, ensure_ascii=False, indent=2)
         os.replace(temp_path, self.path)
