@@ -184,6 +184,8 @@ Bot 提供常駐鍵盤按鈕與 Telegram 指令選單；也可直接輸入下列
 
 只有 `TELEGRAM_OWNER_USER_ID` 對應的帳號可執行報告、採集、排名、監控及其他管理指令；管理按鈕與指令選單只會顯示給負責人，一般使用者僅能申請 AI 分析權限。申請與授權保存在 `data/ai_access.json`，服務重啟後仍有效；AI 分析僅允許私訊使用，避免將個人資料回覆在群組。請讓負責人先私訊 Bot 啟動對話，Bot 才能傳送審核通知。AI 分析需設定 `OPENAI_API_KEY`，且使用者提供的本機排名、最多 20 筆近期日線、基本與財務資料會傳送至 OpenAI API。AI 回覆僅供參考，非投資建議；不會改變量化排名或送出交易委託。
 
+Bot 日誌同時輸出至 systemd journal 與 `logs/gvw_bot.log`；檔案達 5 MB 後輪替，保留最近 3 個備份。一般日誌訊息會遮蔽 Telegram Bot token、Bearer token 與常見 OpenAI API key 格式。OpenAI 請求失敗時會記錄 HTTP 狀態與供應商錯誤資訊，不記錄分析資料快照。
+
 ---
 
 ## 🧪 自動化測試

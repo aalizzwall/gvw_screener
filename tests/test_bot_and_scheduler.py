@@ -1,14 +1,36 @@
 import os
+import logging
 import tempfile
 import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 from gvw_bot.heartbeat import HeartbeatManager
+from gvw_bot.main import CredentialRedactionFilter
 from gvw_bot.bot_handler import PUBLIC_REPLY_KEYBOARD, REPLY_KEYBOARD, TelegramBotHandler
 from gvw_bot.scheduler import GVWScheduler, ScheduledJob
 from src.state.ai_access import AIAnalysisAccessStore
 
 class TestBotAndScheduler(unittest.TestCase):
+
+    def test_log_filter_redacts_telegram_and_openai_credentials(self):
+        record = logging.LogRecord(
+            "test",
+            logging.ERROR,
+            __file__,
+            1,
+            "request failed: %s %s %s",
+            (
+                "https://api.telegram.org/bot123456:telegram-secret/sendMessage",
+                "Bearer openai-secret",
+                "sk-proj-openai-secret",
+            ),
+            None,
+        )
+
+        self.assertTrue(CredentialRedactionFilter().filter(record))
+        self.assertNotIn("telegram-secret", record.getMessage())
+        self.assertNotIn("openai-secret", record.getMessage())
+        self.assertIn("[REDACTED]", record.getMessage())
 
     def test_startup_modules_import(self):
         import gvw_bot.bot_handler

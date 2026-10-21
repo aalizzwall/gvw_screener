@@ -132,5 +132,31 @@ def analyze_stock(
             raise ValueError("OpenAI 回傳空白分析結果")
         return content.strip()
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-        logger.error("OpenAI stock analysis failed for %s: %s", ticker, exc)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status_code = getattr(response, "status_code", "unknown")
+            try:
+                error = response.json().get("error", {})
+            except ValueError:
+                error = {}
+            if not isinstance(error, dict):
+                error = {}
+            message = str(error.get("message", ""))
+            if key in message:
+                message = message.replace(key, "[REDACTED]")
+            logger.error(
+                "OpenAI stock analysis failed for %s: HTTP %s; type=%s; code=%s; message=%s",
+                ticker,
+                status_code,
+                error.get("type", ""),
+                error.get("code", ""),
+                message,
+            )
+        else:
+            logger.error(
+                "OpenAI stock analysis failed for %s: %s: %s",
+                ticker,
+                type(exc).__name__,
+                exc,
+            )
         raise RuntimeError("OpenAI 分析請求失敗，請稍後重試。") from exc

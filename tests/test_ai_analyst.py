@@ -106,6 +106,33 @@ class TestAIAnalyst(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "OpenAI 分析請求失敗"):
                 analyze_stock("2330", self.state, api_key="test-key")
 
+    def test_analysis_logs_provider_status_and_safe_error_details(self):
+        response = Mock()
+        response.status_code = 401
+        response.json.return_value = {
+            "error": {
+                "type": "authentication_error",
+                "code": "invalid_api_key",
+                "message": "Incorrect API key provided: test-secret",
+            }
+        }
+        response.raise_for_status.side_effect = requests.HTTPError(
+            "401 Client Error", response=response
+        )
+
+        with (
+            patch("src.analysis.ai_analyst.requests.post", return_value=response),
+            self.assertLogs("src.analysis.ai_analyst", level="ERROR") as logs,
+            self.assertRaisesRegex(RuntimeError, "OpenAI 分析請求失敗"),
+        ):
+            analyze_stock("2330", self.state, api_key="test-secret")
+
+        log_output = "\n".join(logs.output)
+        self.assertIn("401", log_output)
+        self.assertIn("invalid_api_key", log_output)
+        self.assertIn("Incorrect API key provided:", log_output)
+        self.assertNotIn("test-secret", log_output)
+
 
 if __name__ == "__main__":
     unittest.main()

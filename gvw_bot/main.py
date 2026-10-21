@@ -5,10 +5,12 @@ Runs as a background daemon managing periodic collection, ranking, reporting,
 intraday monitoring, and Telegram bot interactions.
 """
 import os
+import logging
+import re
+import signal
 import sys
 import time
-import signal
-import logging
+from logging.handlers import RotatingFileHandler
 
 # Ensure project root is in sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,16 +18,52 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.config import TELEGRAM_BOT_TOKEN
+from src.config import LOGS_DIR, TELEGRAM_BOT_TOKEN
 from gvw_bot.heartbeat import HeartbeatManager
 from gvw_bot.scheduler import GVWScheduler
 from gvw_bot.bot_handler import TelegramBotHandler
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+
+class CredentialRedactionFilter(logging.Filter):
+    _patterns = (
+        (
+            re.compile(r"(https://api\.telegram\.org/bot)\d+:[A-Za-z0-9_-]+"),
+            r"\1[REDACTED]",
+        ),
+        (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+"), r"\1[REDACTED]"),
+        (re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]+"), "[REDACTED]"),
+    )
+
+    def filter(self, record):
+        message = record.getMessage()
+        for pattern, replacement in self._patterns:
+            message = pattern.sub(replacement, message)
+        record.msg = message
+        record.args = ()
+        return True
+
+
+def configure_logging():
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handlers = [
+        logging.StreamHandler(),
+        RotatingFileHandler(
+            os.path.join(LOGS_DIR, "gvw_bot.log"),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        ),
+    ]
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        handler.addFilter(CredentialRedactionFilter())
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
+
+
+configure_logging()
 logger = logging.getLogger("gvw.bot.main")
 
 def main():
@@ -72,4 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
