@@ -3,6 +3,8 @@ import sys
 import time
 import logging
 import html
+import subprocess
+import threading
 from typing import Optional, Dict, Any, List, Union
 import requests
 
@@ -44,6 +46,7 @@ BOT_COMMANDS = [
     {"command": "ai_remove", "description": "移除 provider/model 或序號"},
     {"command": "ai_check", "description": "檢測可用性並將可用者排前面"},
     {"command": "ai_local", "description": "查看或設定地端 LM-Studio 端點 URL"},
+    {"command": "update", "description": "一鍵從 GitHub 拉取最新代碼並重啟服務"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -98,6 +101,7 @@ class TelegramBotHandler:
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
         self.last_update_id = 0
         self.running = False
+        self._updating = False
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
 
     def send_message(
@@ -145,7 +149,7 @@ class TelegramBotHandler:
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
-            "/ai_local",
+            "/ai_local", "/update",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
@@ -266,7 +270,7 @@ class TelegramBotHandler:
         elif cmd == "/ai_local":
             args = text.split()[1:]
             if not args:
-                endpoint = self.ai_provider_store.get_local_base_url()
+                endpoint = self.ai_provider_store.get_local_base_url() or "未設定"
                 self.send_message(
                     chat_id,
                     f"🏠 <b>地端 LM-Studio 端點</b>\n\n"
@@ -284,6 +288,18 @@ class TelegramBotHandler:
                     )
                 except ValueError as exc:
                     self.send_message(chat_id, f"⚠️ {html.escape(str(exc))}")
+
+        elif cmd == "/update":
+            if self._updating:
+                self.send_message(chat_id, "⚠️ 系統正在執行更新程序中，請稍候...")
+            else:
+                self._updating = True
+                threading.Thread(
+                    target=self._execute_system_update,
+                    args=(chat_id,),
+                    daemon=True,
+                    name="GVWSystemUpdateThread",
+                ).start()
 
         elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
@@ -348,6 +364,105 @@ class TelegramBotHandler:
             self.ai_provider_store.set_chain(healthy + unhealthy)
             lines.append(f"\n🔀 主力不可用，已將可用者排前面，新主力：<code>{html.escape(healthy[0])}</code>")
         return "\n".join(lines)
+
+    def _execute_system_update(self, chat_id: Union[int, str]):
+        """Runs git fetch/pull, updates dependencies if needed, and triggers service restart."""
+        try:
+            self.send_message(chat_id, "🔄 正在檢查並拉取 GitHub 最新代碼...")
+
+            # 1. git fetch origin main
+            fetch_res = subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                cwd=parent_dir,
+            )
+            if fetch_res.returncode != 0:
+                self.send_message(
+                    chat_id,
+                    f"❌ Git fetch 失敗：\n<code>{html.escape(fetch_res.stderr.strip())}</code>",
+                )
+                return
+
+            local_rev = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                cwd=parent_dir,
+            ).strip()
+            remote_rev = subprocess.check_output(
+                ["git", "rev-parse", "origin/main"],
+                text=True,
+                cwd=parent_dir,
+            ).strip()
+
+            if local_rev == remote_rev:
+                short_hash = local_rev[:7]
+                self.send_message(
+                    chat_id,
+                    f"✅ <b>目前已是最新版本！</b>\n"
+                    f"• 當前 Commit：<code>{short_hash}</code>\n"
+                    f"無須進行更新。",
+                )
+                return
+
+            log_diff = subprocess.check_output(
+                ["git", "log", f"{local_rev}..{remote_rev}", "--oneline"],
+                text=True,
+                cwd=parent_dir,
+            ).strip()
+
+            pull_res = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                cwd=parent_dir,
+            )
+            if pull_res.returncode != 0:
+                self.send_message(
+                    chat_id,
+                    f"❌ Git pull 失敗：\n<code>{html.escape(pull_res.stderr.strip())}</code>",
+                )
+                return
+
+            new_rev = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                cwd=parent_dir,
+            ).strip()[:7]
+
+            msg = (
+                f"🚀 <b>系統代碼更新成功！</b>\n\n"
+                f"• 版本變更：<code>{local_rev[:7]}</code> ➔ <code>{new_rev}</code>\n"
+                f"• 更新內容：\n<code>{html.escape(log_diff)}</code>\n\n"
+                f"正在重啟 <code>gvw_bot</code> 服務..."
+            )
+            self.send_message(chat_id, msg)
+
+            venv_pip = os.path.join(parent_dir, ".venv", "bin", "pip")
+            req_file = os.path.join(parent_dir, "requirements.txt")
+            if os.path.exists(venv_pip) and os.path.exists(req_file):
+                logger.info("Updating dependencies via pip in .venv...")
+                subprocess.run([venv_pip, "install", "-r", req_file], timeout=90, cwd=parent_dir)
+
+            time.sleep(1.5)
+
+            logger.info("Restarting gvw_bot service via systemctl...")
+            try:
+                subprocess.Popen(["systemctl", "--user", "restart", "gvw_bot"])
+            except Exception as se:
+                logger.warning(f"Could not trigger systemctl restart: {se}")
+                self.send_message(
+                    chat_id,
+                    f"⚠️ 代碼已更新，但自動重啟觸發失敗：<code>{html.escape(str(se))}</code>，請手動重啟。",
+                )
+
+        except Exception as e:
+            logger.error(f"Error during system update: {e}", exc_info=True)
+            self.send_message(chat_id, f"❌ 更新程序異常：<code>{html.escape(str(e))}</code>")
+        finally:
+            self._updating = False
 
     def _is_owner(self, user_id: Optional[Union[int, str]]) -> bool:
         return bool(self.owner_user_id and str(user_id) == self.owner_user_id)

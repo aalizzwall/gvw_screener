@@ -8,6 +8,7 @@ import os
 import logging
 import re
 import signal
+import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -18,7 +19,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.config import LOGS_DIR, TELEGRAM_BOT_TOKEN
+from src.config import LOGS_DIR, TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_USER_ID
 from gvw_bot.heartbeat import HeartbeatManager
 from gvw_bot.scheduler import GVWScheduler
 from gvw_bot.bot_handler import TelegramBotHandler
@@ -66,6 +67,19 @@ def configure_logging():
 configure_logging()
 logger = logging.getLogger("gvw.bot.main")
 
+def get_git_commit_hash() -> str:
+    try:
+        res = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            cwd=parent_dir,
+            timeout=5,
+        ).strip()
+        return res[:7]
+    except Exception:
+        return "unknown"
+
+
 def main():
     logger.info("==========================================")
     logger.info("   GVW Bot & Autonomous Service Starting   ")
@@ -101,6 +115,17 @@ def main():
     logger.info("Service initialized. Hermes-agent can monitor via heartbeat.json.")
 
     if TELEGRAM_BOT_TOKEN:
+        if TELEGRAM_OWNER_USER_ID:
+            commit_hash = get_git_commit_hash()
+            try:
+                bot.send_message(
+                    TELEGRAM_OWNER_USER_ID,
+                    f"🤖 <b>GVW Bot 服務已啟動並上線！</b>\n"
+                    f"• 版本：<code>{commit_hash}</code>\n"
+                    f"• 狀態：<code>正常運行中 ✅</code>",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send startup notification: {e}")
         logger.info("Telegram Bot Token detected. Starting interactive bot polling...")
         bot.run_polling_loop()
     else:

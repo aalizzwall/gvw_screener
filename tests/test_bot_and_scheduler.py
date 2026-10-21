@@ -380,6 +380,77 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertEqual(provider_store.get_local_base_url(), "http://192.168.1.100:1234/v1")
         self.assertIn("僅限系統負責人", bot.send_message.call_args.args[1])
 
+    def test_non_owner_cannot_run_update(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        bot.handle_command(20, "/update", "/update", user_id=20)
+        self.assertIn("僅限系統負責人", bot.send_message.call_args.args[1])
+        self.assertFalse(bot._updating)
+
+    def test_owner_update_when_already_latest(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        with patch("gvw_bot.bot_handler.subprocess.run") as mock_run, \
+             patch("gvw_bot.bot_handler.subprocess.check_output") as mock_check_output:
+            mock_run.return_value = Mock(returncode=0, stderr="")
+            mock_check_output.side_effect = [
+                "1234567abcdef",  # local_rev
+                "1234567abcdef",  # remote_rev
+            ]
+
+            bot._execute_system_update(10)
+
+        calls = [c.args[1] for c in bot.send_message.call_args_list]
+        self.assertTrue(any("最新版本" in c for c in calls))
+        self.assertFalse(bot._updating)
+
+    def test_owner_update_pulls_and_restarts(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        with patch("gvw_bot.bot_handler.subprocess.run") as mock_run, \
+             patch("gvw_bot.bot_handler.subprocess.check_output") as mock_check_output, \
+             patch("gvw_bot.bot_handler.subprocess.Popen") as mock_popen, \
+             patch("gvw_bot.bot_handler.time.sleep") as mock_sleep, \
+             patch("gvw_bot.bot_handler.os.path.exists", return_value=False):
+            mock_run.return_value = Mock(returncode=0, stderr="")
+            mock_check_output.side_effect = [
+                "1111111oldrev",  # local_rev
+                "2222222newrev",  # remote_rev
+                "2222222 feat: new update",  # git log
+                "2222222newrev",  # new HEAD
+            ]
+
+            bot._execute_system_update(10)
+
+        calls = [c.args[1] for c in bot.send_message.call_args_list]
+        self.assertTrue(any("系統代碼更新成功" in c for c in calls))
+        self.assertTrue(any("正在重啟" in c for c in calls))
+        mock_popen.assert_called_once_with(["systemctl", "--user", "restart", "gvw_bot"])
+        self.assertFalse(bot._updating)
+
+    def test_owner_update_handles_git_fetch_failure(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        with patch("gvw_bot.bot_handler.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=1, stderr="fatal: unable to access")
+
+            bot._execute_system_update(10)
+
+        calls = [c.args[1] for c in bot.send_message.call_args_list]
+        self.assertTrue(any("Git fetch 失敗" in c for c in calls))
+        self.assertFalse(bot._updating)
+
+    def test_get_git_commit_hash(self):
+        from gvw_bot.main import get_git_commit_hash
+        with patch("gvw_bot.main.subprocess.check_output", return_value="abcdef123456\n"):
+            self.assertEqual(get_git_commit_hash(), "abcdef1")
+        with patch("gvw_bot.main.subprocess.check_output", side_effect=Exception("git error")):
+            self.assertEqual(get_git_commit_hash(), "unknown")
+
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")
         self.hb = HeartbeatManager(heartbeat_file=self.test_hb_file)
