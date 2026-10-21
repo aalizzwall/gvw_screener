@@ -12,7 +12,11 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.config import TELEGRAM_BOT_TOKEN, TELEGRAM_HOME_CHANNEL
+from src.config import (
+    AI_ANALYSIS_ALLOWED_CHAT_IDS,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_HOME_CHANNEL,
+)
 from src.analysis.ai_analyst import analyze_stock
 from src.reporting.report_engine import generate_daily_report
 from src.analysis.ranker import run_ranking
@@ -161,6 +165,13 @@ class TelegramBotHandler:
             self.send_message(chat_id, f"✅ 排名計算完成，已評估 {count} 檔標的。可輸入 /report 查看。")
 
         elif cmd == "/analyze":
+            if str(chat_id) not in AI_ANALYSIS_ALLOWED_CHAT_IDS:
+                self.pending_analysis_chats.discard(chat_id)
+                self.send_message(
+                    chat_id,
+                    "⛔ 此聊天尚未獲准使用 AI 分析，請將 chat ID 加入 AI_ANALYSIS_ALLOWED_CHAT_IDS。",
+                )
+                return
             parts = text.split(maxsplit=1) if text.startswith("/") else [text]
             if len(parts) == 1:
                 self.pending_analysis_chats.add(chat_id)

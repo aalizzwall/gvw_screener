@@ -79,3 +79,8 @@ FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN") or os.environ.get("FINMIND_API_T
 # OpenAI Configuration
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+AI_ANALYSIS_ALLOWED_CHAT_IDS = {
+    chat_id.strip()
+    for chat_id in os.environ.get("AI_ANALYSIS_ALLOWED_CHAT_IDS", "").split(",")
+    if chat_id.strip()
+}

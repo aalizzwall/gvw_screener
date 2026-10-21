@@ -132,6 +132,7 @@ TELEGRAM_HOME_CHANNEL="-100123456789"
 # (可選) Telegram 個股 AI 分析；使用 OpenAI API，費用依帳戶用量計算
 OPENAI_API_KEY="您的OpenAI API Key"
 OPENAI_MODEL="gpt-4o-mini"
+AI_ANALYSIS_ALLOWED_CHAT_IDS="您的Telegram Chat ID，可用逗號分隔多個"
 
 # (可選) 自訂資料儲存目錄，預設為專案目錄下的 data/
 GVW_DATA_DIR="./data"
@@ -178,7 +179,7 @@ Bot 提供常駐鍵盤按鈕與 Telegram 指令選單；也可直接輸入下列
 * `/rank`：手動觸發重新評分排名
 * `/analyze 2330`：使用 OpenAI 根據本機已採集的個股資料產生 AI 評估；也可點鍵盤「🤖 AI 個股分析」後輸入代碼。
 
-AI 分析只使用本機已保存的排名、最多 20 筆近期日線、基本資料與財務資料；這些股票資料會傳送至 OpenAI API，請先確認符合你的資料使用需求。未設定 `OPENAI_API_KEY` 時功能無法使用。AI 回覆僅供參考，非投資建議；不會改變量化排名或送出交易委託。
+AI 分析只使用本機已保存的排名、最多 20 筆近期日線、基本資料與財務資料；這些股票資料會傳送至 OpenAI API，請先確認符合你的資料使用需求。必須設定 `OPENAI_API_KEY` 和 `AI_ANALYSIS_ALLOWED_CHAT_IDS` 才能使用；白名單預設為空，未授權的聊天不會觸發模型請求。AI 回覆僅供參考，非投資建議；不會改變量化排名或送出交易委託。
 
 ---
 
