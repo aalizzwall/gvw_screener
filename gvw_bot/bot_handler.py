@@ -19,7 +19,7 @@ from src.config import (
 )
 from src.analysis.ai_analyst import analyze_stock, check_providers
 from src.state.ai_access import AIAnalysisAccessStore
-from src.state.ai_provider import AIProviderPreferenceStore, PROVIDER_NAMES
+from src.state.ai_provider import AIProviderPreferenceStore, model_catalog
 from src.reporting.report_engine import generate_daily_report
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
@@ -37,9 +37,12 @@ BOT_COMMANDS = [
     {"command": "analyze", "description": "使用 AI 評估個股，例如 /analyze 2330"},
     {"command": "request_ai", "description": "申請使用 AI 個股分析"},
     {"command": "ai_requests", "description": "審核 AI 分析使用申請"},
-    {"command": "ai_status", "description": "查看 AI 主力與備援模型"},
-    {"command": "ai_set", "description": "切換 AI 主力模型，例如 /ai_set gemma"},
-    {"command": "ai_check", "description": "檢測 AI 模型可用性並自動調整順序"},
+    {"command": "ai_status", "description": "查看 AI provider/model 順序"},
+    {"command": "ai_models", "description": "列出可選的 AI provider/model"},
+    {"command": "ai_set", "description": "設定順序，例如 /ai_set openai/gpt-4o gemma/gemma-3-27b-it"},
+    {"command": "ai_add", "description": "加入 provider/model，可指定位置"},
+    {"command": "ai_remove", "description": "移除 provider/model 或序號"},
+    {"command": "ai_check", "description": "檢測可用性並將可用者排前面"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -140,7 +143,7 @@ class TelegramBotHandler:
         owner_only_commands = {
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
-            "/ai_status", "/ai_set", "/ai_check",
+            "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
@@ -242,17 +245,16 @@ class TelegramBotHandler:
         elif cmd == "/ai_status":
             self.send_message(chat_id, self._ai_status_text())
 
-        elif cmd == "/ai_set":
-            parts = text.split(maxsplit=1)
-            choice = parts[1].strip().lower() if len(parts) > 1 else ""
-            if choice not in PROVIDER_NAMES:
-                self.send_message(
-                    chat_id,
-                    f"用法：/ai_set &lt;{' | '.join(PROVIDER_NAMES)}&gt;，例如 /ai_set gemma",
-                )
-                return
-            self.ai_provider_store.set_primary(choice)
-            self.send_message(chat_id, "✅ 已更新 AI 順序。\n\n" + self._ai_status_text())
+        elif cmd == "/ai_models":
+            lines = ["📚 <b>可選的 provider/model</b>"]
+            for provider, models in model_catalog().items():
+                lines.append(f"\n<b>{provider}</b>")
+                lines.extend(f"• <code>{provider}/{model}</code>" for model in models)
+            self.send_message(chat_id, "\n".join(lines))
+
+        elif cmd in {"/ai_set", "/ai_add", "/ai_remove"}:
+            args = text.split()[1:]
+            self.send_message(chat_id, self._update_ai_chain(cmd, args))
 
         elif cmd == "/ai_check":
             self.send_message(chat_id, "🩺 正在檢測 AI 模型可用性，請稍候...")
@@ -270,31 +272,51 @@ class TelegramBotHandler:
             self.send_message(chat_id, "未知指令，請輸入 /help 查看功能。")
 
     def _ai_status_text(self) -> str:
-        order = self.ai_provider_store.get_order()
-        labels = {"openai": "OpenAI", "gemma": "Google Gemma"}
-        lines = ["🤖 <b>AI 模型順序</b>"]
-        for index, name in enumerate(order):
-            role = "主力" if index == 0 else "備援"
-            lines.append(f"• {role}：{labels[name]}")
-        lines.append("\n主力失敗（如 429）時會自動改用備援。")
+        lines = ["🤖 <b>AI provider/model 順序</b>"]
+        for index, entry in enumerate(self.ai_provider_store.get_chain(), start=1):
+            lines.append(f"{index}. <code>{html.escape(entry)}</code>" + ("（主力）" if index == 1 else ""))
+        lines.append("\n前一個失敗（如 429）時，自動改用下一個。")
         return "\n".join(lines)
 
+    def _update_ai_chain(self, cmd: str, args: List[str]) -> str:
+        usage = {
+            "/ai_set": "用法：/ai_set &lt;provider/model&gt; [&lt;provider/model&gt; ...]\n"
+                       "例如：/ai_set openai/gpt-4o gemma/gemma-3-27b-it",
+            "/ai_add": "用法：/ai_add &lt;provider/model&gt; [位置]\n例如：/ai_add gemma/gemma-3-12b-it 2",
+            "/ai_remove": "用法：/ai_remove &lt;provider/model|序號&gt;",
+        }[cmd]
+        if not args:
+            return usage
+        try:
+            if cmd == "/ai_set":
+                self.ai_provider_store.set_chain(args)
+            elif cmd == "/ai_add":
+                if len(args) > 2 or (len(args) == 2 and not args[1].isdigit()):
+                    return usage
+                self.ai_provider_store.add(args[0], int(args[1]) if len(args) == 2 else None)
+            else:
+                if len(args) != 1:
+                    return usage
+                self.ai_provider_store.remove(args[0])
+        except ValueError as exc:
+            return f"⚠️ {html.escape(str(exc))}"
+        return "✅ 已更新。\n\n" + self._ai_status_text()
+
     def _run_ai_check(self) -> str:
-        results = check_providers(self.ai_provider_store.get_order())
+        results = check_providers(self.ai_provider_store.get_chain())
         lines = ["🩺 <b>AI 模型檢測結果</b>"]
         for result in results:
             icon = "✅" if result["ok"] else "❌"
             lines.append(
-                f"{icon} {html.escape(result['label'])} "
-                f"(<code>{html.escape(result['model'])}</code>)：{html.escape(result['detail'])}"
+                f"{icon} <code>{html.escape(result['entry'])}</code>：{html.escape(result['detail'])}"
             )
-        primary = results[0]
-        healthy = next((r for r in results if r["ok"]), None)
-        if not primary["ok"] and healthy:
-            self.ai_provider_store.set_primary(healthy["provider"])
-            lines.append(f"\n🔀 主力模型不可用，已改為 {html.escape(healthy['label'])}。")
-        elif not healthy:
+        healthy = [r["entry"] for r in results if r["ok"]]
+        if not healthy:
             lines.append("\n⚠️ 所有 AI 模型目前皆不可用，維持原順序。")
+        elif not results[0]["ok"]:
+            unhealthy = [r["entry"] for r in results if not r["ok"]]
+            self.ai_provider_store.set_chain(healthy + unhealthy)
+            lines.append(f"\n🔀 主力不可用，已將可用者排前面，新主力：<code>{html.escape(healthy[0])}</code>")
         return "\n".join(lines)
 
     def _is_owner(self, user_id: Optional[Union[int, str]]) -> bool:

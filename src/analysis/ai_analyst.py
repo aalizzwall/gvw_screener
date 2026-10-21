@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from src.config import GEMINI_API_KEY, GEMMA_MODEL, OPENAI_API_KEY, OPENAI_MODEL
-from src.state.ai_provider import AIProviderPreferenceStore
+from src.config import GEMINI_API_KEY, OPENAI_API_KEY
+from src.state.ai_provider import AIProviderPreferenceStore, parse_entry
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -112,10 +112,10 @@ _PROVIDERS = {
 }
 
 
-def _resolve_provider(name: str, api_key: Optional[str], model: Optional[str]):
+def _provider_key(name: str, api_key: Optional[str] = None) -> str:
     if name == "openai":
-        return (OPENAI_API_KEY if api_key is None else api_key), (model or OPENAI_MODEL)
-    return GEMINI_API_KEY, GEMMA_MODEL
+        return OPENAI_API_KEY if api_key is None else api_key
+    return GEMINI_API_KEY
 
 
 def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
@@ -186,52 +186,58 @@ def analyze_stock(
     state_manager: Optional[StateManager] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
-    provider_order: Optional[List[str]] = None,
+    chain: Optional[List[str]] = None,
 ) -> str:
-    """Evaluate one cached Taiwan stock with the owner-selected AI provider.
+    """Evaluate one cached Taiwan stock with the owner-defined provider/model chain.
 
-    Providers are tried in the owner-selected order; if one fails (429, 5xx, timeout,
-    invalid response, ...) the next configured provider is tried. This function never
-    places orders. ``api_key``/``model`` override the OpenAI provider only.
+    ``provider/model`` entries are tried in order; if one fails (429, 5xx, timeout,
+    invalid response, ...) the next entry with a configured key is tried. This function
+    never places orders. ``api_key``/``model`` override the OpenAI entries only.
     """
     if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 
-    order = provider_order or AIProviderPreferenceStore().get_order()
     candidates = []
-    for name in order:
-        key, provider_model = _resolve_provider(name, api_key, model)
+    for entry in chain or AIProviderPreferenceStore().get_chain():
+        name, entry_model = parse_entry(entry)
+        key = _provider_key(name, api_key)
         if key:
-            candidates.append((name, key, provider_model))
+            candidates.append((name, key, (model or entry_model) if name == "openai" else entry_model))
     if not candidates:
         raise RuntimeError("尚未設定 OPENAI_API_KEY 或 GEMINI_API_KEY，請先完成服務設定。")
 
     snapshot = _stock_snapshot(ticker, state_manager or StateManager())
     user_content = json.dumps(snapshot, ensure_ascii=False, default=str)
 
-    attempted = []
+    attempted = {}
     for name, key, provider_model in candidates:
         label = _PROVIDERS[name]["label"]
-        attempted.append(label)
+        attempted[label] = None
         try:
             return _request_completion(
                 name, key, provider_model, _build_messages(name, user_content), 900
             )
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(label, ticker, key, exc)
-            if (name, key, provider_model) != candidates[-1]:
-                logger.warning("%s 分析失敗，改用下一個 AI provider。", label)
+            _log_failure(f"{label}({provider_model})", ticker, key, exc)
             last_exc = exc
     raise RuntimeError(f"{'、'.join(attempted)} 分析請求失敗，請稍後重試。") from last_exc
 
 
-def check_providers(provider_order: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Probe each provider with a tiny request; used by the owner's /ai_check command."""
+def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Probe each chain entry with a tiny request; used by the owner's /ai_check command."""
     results = []
-    for name in provider_order or AIProviderPreferenceStore().get_order():
+    for entry in chain or AIProviderPreferenceStore().get_chain():
+        name, model = parse_entry(entry)
         label = _PROVIDERS[name]["label"]
-        key, model = _resolve_provider(name, None, None)
-        result = {"provider": name, "label": label, "model": model, "ok": False, "detail": ""}
+        key = _provider_key(name)
+        result = {
+            "entry": entry,
+            "provider": name,
+            "label": label,
+            "model": model,
+            "ok": False,
+            "detail": "",
+        }
         if not key:
             result["detail"] = f"未設定 {_PROVIDERS[name]['key_name']}"
             results.append(result)
@@ -242,9 +248,8 @@ def check_providers(provider_order: Optional[List[str]] = None) -> List[Dict[str
             result["ok"] = True
             result["detail"] = f"{int((time.perf_counter() - started) * 1000)}ms"
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(label, "health-check", key, exc)
-            response = getattr(exc, "response", None)
-            status = getattr(response, "status_code", None)
+            _log_failure(f"{label}({model})", "health-check", key, exc)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
             result["detail"] = f"HTTP {status}" if status else type(exc).__name__
         results.append(result)
     return results
