@@ -22,8 +22,7 @@ class TestMaintenanceAgent(unittest.TestCase):
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.logs_dir, exist_ok=True)
 
-        self.db_path = os.path.join(self.data_dir, "test_gvw.db")
-        self.state = StateManager(db_path=self.db_path)
+        self.state = StateManager(data_dir=self.data_dir)
         self.ai_store = AIProviderPreferenceStore(os.path.join(self.data_dir, "ai.json"))
         self.agent = MaintenanceAgent(
             state_manager=self.state,
@@ -66,6 +65,12 @@ class TestMaintenanceAgent(unittest.TestCase):
         self.assertNotIn("Finished ranking", res)
 
     def test_tool_inspect_db_schema(self):
+        db_path = os.path.join(self.data_dir, "test_gvw.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE stocks (id INT, ticker TEXT);")
+        conn.commit()
+        conn.close()
+
         schema = self.agent.tool_inspect_db_schema()
         self.assertIn("test_gvw.db", schema)
         self.assertIn("stocks", schema["test_gvw.db"])

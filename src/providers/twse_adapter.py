@@ -34,6 +34,8 @@ class TWSEAdapter(DataProvider):
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
+        self._valuation_cache = None
+        self._valuation_cache_time = 0.0
         if not self.logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter('[TWSE_ADAPTER] %(asctime)s - %(levelname)s - %(message)s')
@@ -72,18 +74,15 @@ class TWSEAdapter(DataProvider):
             self.logger.error(f"Error fetching {dataset_key}: {e}")
             return None
 
-    _valuation_cache = None
-    _valuation_cache_time = 0.0
-
     def _get_valuation_data(self) -> List[Dict[str, Any]]:
         now = time.time()
-        if TWSEAdapter._valuation_cache is not None and (now - TWSEAdapter._valuation_cache_time < 3600):
-            return TWSEAdapter._valuation_cache
+        if self._valuation_cache is not None and (now - self._valuation_cache_time < 3600):
+            return self._valuation_cache
         try:
             data = self._get_data("valuation")
             if isinstance(data, list):
-                TWSEAdapter._valuation_cache = data
-                TWSEAdapter._valuation_cache_time = now
+                self._valuation_cache = data
+                self._valuation_cache_time = now
                 return data
         except Exception as e:
             self.logger.debug(f"Could not load valuation data: {e}")
@@ -125,23 +124,6 @@ class TWSEAdapter(DataProvider):
         info_data = self._select_company_record(
             self._get_data("basic_info", {"company_id": ticker}), ticker
         )
-        val_records = self._get_valuation_data()
-        val_data = self._select_company_record(val_records, ticker)
-        if not info_data and val_data:
-            info_data = {"name": val_data.get("Name", ""), "ticker": ticker}
-        if isinstance(info_data, dict) and val_data:
-            try:
-                info_data["pe"] = float(str(val_data.get("PEratio", 0) or 0).replace(",", "").strip() or 0)
-            except (ValueError, TypeError):
-                info_data["pe"] = 0.0
-            try:
-                info_data["pb"] = float(str(val_data.get("PBratio", 0) or 0).replace(",", "").strip() or 0)
-            except (ValueError, TypeError):
-                info_data["pb"] = 0.0
-            try:
-                info_data["yield"] = float(str(val_data.get("DividendYield", 0) or 0).replace(",", "").strip() or 0)
-            except (ValueError, TypeError):
-                info_data["yield"] = 0.0
         sh_data = self._get_data("shareholders", {"company_id": ticker}) or []
         if isinstance(sh_data, list):
             sh_data = [
@@ -156,6 +138,22 @@ class TWSEAdapter(DataProvider):
 
         if not any((pl_data, bs_data, info_data, sh_data)):
             return {"ticker": ticker, "source": "twse", "error": "No TWSE data for ticker"}
+
+        val_records = self._get_valuation_data()
+        val_data = self._select_company_record(val_records, ticker)
+        if isinstance(info_data, dict) and val_data:
+            try:
+                info_data["pe"] = float(str(val_data.get("PEratio", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["pe"] = 0.0
+            try:
+                info_data["pb"] = float(str(val_data.get("PBratio", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["pb"] = 0.0
+            try:
+                info_data["yield"] = float(str(val_data.get("DividendYield", 0) or 0).replace(",", "").strip() or 0)
+            except (ValueError, TypeError):
+                info_data["yield"] = 0.0
 
         normalized_data = {
             "ticker": ticker,
