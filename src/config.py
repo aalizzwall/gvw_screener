@@ -83,3 +83,10 @@ AI_ACCESS_FILE = os.environ.get("GVW_AI_ACCESS_FILE", os.path.join(DATA_DIR, "ai
 # OpenAI Configuration
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+# Google Gemma (Google AI Studio, OpenAI-compatible endpoint) Configuration
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma-3-27b-it")
+
+# Owner-selected primary AI provider ("openai" or "gemma"); the other is the fallback
+AI_PROVIDER_FILE = os.environ.get("GVW_AI_PROVIDER_FILE", os.path.join(DATA_DIR, "ai_provider.json"))
