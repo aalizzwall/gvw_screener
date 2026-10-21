@@ -201,3 +201,30 @@ systemctl --user enable --now gvw_bot
 # 3. 檢查運行日誌
 journalctl --user -u gvw_bot -f
 ```
+
+## 🚀 GitHub Actions 自動部署 (Self-hosted Runner)
+
+`.github/workflows/deploy.yml` 會在 Pull Request 上執行測試；推送至 `main` 且測試通過後，會將程式部署到 production runner、安裝依賴並重啟 `gvw_bot`。手動執行 workflow 也只會在 `main` 分支部署。
+
+一次性設定：
+
+1. 在 GitHub Repository 的 **Settings → Actions → Runners**，確認 runner 帶有 `self-hosted`、`Linux`、`ARM64` labels。runner 必須在部署主機上以 `pi` 使用者執行；workflow 會拒絕其他使用者。
+2. 在 Raspberry Pi 安裝部署需求：
+   ```bash
+   sudo apt update
+   sudo apt install -y rsync python3-venv
+   ```
+3. 在主機建立 `/home/pi/.hermes/gvw_screener/.env`，設定所需的 Telegram 與資料來源憑證，並限制檔案權限：
+   ```bash
+   mkdir -p /home/pi/.hermes/gvw_screener
+   nano /home/pi/.hermes/gvw_screener/.env
+   chmod 600 /home/pi/.hermes/gvw_screener/.env
+   ```
+   部署會保留 `.env`、`data/`、`logs/` 與資料庫檔案。
+4. 讓 `pi` 的 systemd user manager 在登出後仍運作：
+   ```bash
+   sudo loginctl enable-linger pi
+   ```
+5. 推送 workflow 後，首次部署會安裝 user service、建立 `.venv`、安裝依賴並啟動服務。
+
+Workflow 僅對 `main` 的 push 和手動執行觸發部署，不會在 Pull Request 中執行 self-hosted runner。請保護 `main` 分支，並限制可修改 workflow 或合併程式碼的人員。

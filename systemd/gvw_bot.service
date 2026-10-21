@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi/.hermes/gvw_screener/gvw_bot
-ExecStart=/usr/bin/python3 /home/pi/.hermes/gvw_screener/gvw_bot/main.py
+WorkingDirectory=%h/.hermes/gvw_screener/gvw_bot
+EnvironmentFile=-%h/.hermes/gvw_screener/.env
+ExecStart=%h/.hermes/gvw_screener/.venv/bin/python %h/.hermes/gvw_screener/gvw_bot/main.py
 Restart=always
 RestartSec=10
 
