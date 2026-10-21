@@ -72,15 +72,14 @@ MAX_CONSECUTIVE_FAILURES = 3
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_HOME_CHANNEL = os.environ.get("TELEGRAM_HOME_CHANNEL", "")
+TELEGRAM_OWNER_USER_ID = os.environ.get("TELEGRAM_OWNER_USER_ID", "")
 
 # FinMind Configuration
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN") or os.environ.get("FINMIND_API_TOKEN")
 
+# Telegram access control
+AI_ACCESS_FILE = os.environ.get("GVW_AI_ACCESS_FILE", os.path.join(DATA_DIR, "ai_access.json"))
+
 # OpenAI Configuration
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-AI_ANALYSIS_ALLOWED_CHAT_IDS = {
-    chat_id.strip()
-    for chat_id in os.environ.get("AI_ANALYSIS_ALLOWED_CHAT_IDS", "").split(",")
-    if chat_id.strip()
-}

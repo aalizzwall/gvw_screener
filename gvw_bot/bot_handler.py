@@ -13,11 +13,12 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from src.config import (
-    AI_ANALYSIS_ALLOWED_CHAT_IDS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_HOME_CHANNEL,
+    TELEGRAM_OWNER_USER_ID,
 )
 from src.analysis.ai_analyst import analyze_stock
+from src.state.ai_access import AIAnalysisAccessStore
 from src.reporting.report_engine import generate_daily_report
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
@@ -33,6 +34,8 @@ BOT_COMMANDS = [
     {"command": "rank", "description": "重新計算股票排名"},
     {"command": "jobs", "description": "查看排程任務"},
     {"command": "analyze", "description": "使用 AI 評估個股，例如 /analyze 2330"},
+    {"command": "request_ai", "description": "申請使用 AI 個股分析"},
+    {"command": "ai_requests", "description": "審核 AI 分析使用申請"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -42,6 +45,7 @@ MENU_BUTTONS = {
     "🏆 重新排名": "/rank",
     "⏰ 排程任務": "/jobs",
     "🤖 AI 個股分析": "/analyze",
+    "📝 申請 AI 分析": "/request_ai",
 }
 REPLY_KEYBOARD = {
     "keyboard": [
@@ -49,6 +53,14 @@ REPLY_KEYBOARD = {
         ["🔍 盤中監控", "📥 採集資料"],
         ["🏆 重新排名", "⏰ 排程任務"],
         ["🤖 AI 個股分析"],
+        ["📝 申請 AI 分析"],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+PUBLIC_REPLY_KEYBOARD = {
+    "keyboard": [
+        ["🤖 AI 個股分析", "📝 申請 AI 分析"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -60,15 +72,31 @@ class TelegramBotHandler:
     Handles Telegram Bot commands and interactions via long polling.
     """
 
-    def __init__(self, token: Optional[str] = None, scheduler=None, heartbeat_mgr=None):
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        scheduler=None,
+        heartbeat_mgr=None,
+        owner_user_id: Optional[str] = None,
+        ai_access_store: Optional[AIAnalysisAccessStore] = None,
+    ):
         self.token = token or TELEGRAM_BOT_TOKEN
         self.scheduler = scheduler
         self.hb = heartbeat_mgr
+        configured_owner = TELEGRAM_OWNER_USER_ID if owner_user_id is None else owner_user_id
+        self.owner_user_id = str(configured_owner).strip()
+        self.ai_access_store = ai_access_store or AIAnalysisAccessStore()
         self.last_update_id = 0
         self.running = False
-        self.pending_analysis_chats = set()
+        self.pending_analysis_chats: Dict[Union[int, str], str] = {}
 
-    def send_message(self, chat_id: Union[int, str], text: str, parse_mode: str = "HTML") -> bool:
+    def send_message(
+        self,
+        chat_id: Union[int, str],
+        text: str,
+        parse_mode: str = "HTML",
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
@@ -76,7 +104,9 @@ class TelegramBotHandler:
             "chat_id": chat_id,
             "text": text,
             "parse_mode": parse_mode,
-            "reply_markup": REPLY_KEYBOARD,
+            "reply_markup": (
+                reply_markup if reply_markup is not None else self._keyboard_for_chat(chat_id)
+            ),
         }
         try:
             r = requests.post(url, json=payload, timeout=20)
@@ -85,9 +115,29 @@ class TelegramBotHandler:
             logger.error(f"Error sending telegram message: {e}")
             return False
 
-    def handle_command(self, chat_id: Union[int, str], command: str, text: str):
+    def _keyboard_for_chat(self, chat_id: Union[int, str]) -> Dict[str, Any]:
+        if self.owner_user_id and str(chat_id) == self.owner_user_id:
+            return REPLY_KEYBOARD
+        return PUBLIC_REPLY_KEYBOARD
+
+    def handle_command(
+        self,
+        chat_id: Union[int, str],
+        command: str,
+        text: str,
+        user_id: Optional[Union[int, str]] = None,
+        chat_type: str = "private",
+        user: Optional[Dict[str, Any]] = None,
+    ):
         cmd = MENU_BUTTONS.get(command.strip(), command.lower().strip())
         logger.info(f"Received Telegram command: {cmd} from chat {chat_id}")
+        owner_only_commands = {
+            "/report", "/today", "/status", "/jobs", "/monitor",
+            "/collect", "/rank", "/ai_requests",
+        }
+        if cmd in owner_only_commands and not self._is_owner(user_id):
+            self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")
+            return
 
         if cmd in ["/start", "/help"]:
             msg = (
@@ -99,13 +149,9 @@ class TelegramBotHandler:
                 "• 15:00 全局 GVW 評分排名\n"
                 "• 15:30 盤後篩選總結日報\n\n"
                 "<b>可用即時指令：</b>\n"
-                "/report - 立即產製當前篩選日報\n"
-                "/status - 查詢系統與排程運行狀態\n"
-                "/monitor - 立即執行一次盤中信號掃描\n"
-                "/collect - 手動觸發數據採集輪詢\n"
-                "/rank - 手動觸發重新計算排名\n"
-                "/jobs - 查看各排程執行時間\n"
+                "一般使用者可申請 AI 個股分析；系統管理功能僅限負責人使用。\n"
                 "/analyze <代碼> - AI 個股分析，例如 /analyze 2330\n"
+                "/request_ai - 申請 AI 個股分析使用權限\n"
             )
             self.send_message(chat_id, msg)
 
@@ -164,31 +210,147 @@ class TelegramBotHandler:
             count = len(res.get("data", []))
             self.send_message(chat_id, f"✅ 排名計算完成，已評估 {count} 檔標的。可輸入 /report 查看。")
 
-        elif cmd == "/analyze":
-            if str(chat_id) not in AI_ANALYSIS_ALLOWED_CHAT_IDS:
-                self.pending_analysis_chats.discard(chat_id)
-                self.send_message(
-                    chat_id,
-                    "⛔ 此聊天尚未獲准使用 AI 分析，請將 chat ID 加入 AI_ANALYSIS_ALLOWED_CHAT_IDS。",
-                )
+        elif cmd in {"/analyze", "/request_ai"}:
+            if chat_type != "private":
+                self.send_message(chat_id, "請在與 Bot 的私訊中申請或使用 AI 分析，避免個人資料公開於群組。")
                 return
-            parts = text.split(maxsplit=1) if text.startswith("/") else [text]
-            if len(parts) == 1:
-                self.pending_analysis_chats.add(chat_id)
+            if cmd == "/request_ai" or not self._can_analyze(user_id):
+                self._request_ai_access(chat_id, user_id, user or {})
+                return
+            parts = text.split(maxsplit=1) if text.startswith("/") else []
+            if len(parts) < 2:
+                self.pending_analysis_chats[chat_id] = str(user_id or "")
                 self.send_message(chat_id, "請輸入 4 至 6 位數的台股代碼進行 AI 分析，例如 2330。")
                 return
             self._send_stock_analysis(chat_id, parts[1].strip())
 
-        elif chat_id in self.pending_analysis_chats:
+        elif cmd == "/ai_requests":
+            requests_list = self.ai_access_store.pending_requests()
+            if not requests_list:
+                self.send_message(chat_id, "目前沒有待審核的 AI 使用申請。")
+                return
+            for request in requests_list:
+                self._notify_owner_of_request(request)
+
+        elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
             if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
                 self.send_message(chat_id, "請輸入 4 至 6 位數的台股代碼，例如 2330；或輸入 /help 查看功能。")
                 return
-            self.pending_analysis_chats.discard(chat_id)
+            self.pending_analysis_chats.pop(chat_id, None)
             self._send_stock_analysis(chat_id, ticker)
 
         else:
-            self.send_message(chat_id, "未知指令，請輸入 /help 查看說明。")
+            self.send_message(chat_id, "未知指令，請輸入 /help 查看功能。")
+
+    def _is_owner(self, user_id: Optional[Union[int, str]]) -> bool:
+        return bool(self.owner_user_id and str(user_id) == self.owner_user_id)
+
+    def _can_analyze(self, user_id: Optional[Union[int, str]]) -> bool:
+        return self._is_owner(user_id) or self.ai_access_store.is_approved(user_id)
+
+    def _request_ai_access(
+        self,
+        chat_id: Union[int, str],
+        user_id: Optional[Union[int, str]],
+        user: Dict[str, Any],
+    ):
+        if user_id is None:
+            self.send_message(chat_id, "無法驗證 Telegram 使用者，請重新私訊 Bot。")
+            return
+        if self._is_owner(user_id):
+            self.send_message(chat_id, "✅ 你是系統負責人，已可使用 AI 分析。")
+            return
+        if not self.owner_user_id:
+            self.send_message(chat_id, "系統尚未設定負責人，暫時無法受理 AI 使用申請。")
+            return
+
+        status = self.ai_access_store.request(
+            user_id,
+            chat_id,
+            str(user.get("username", "")),
+            str(user.get("first_name", "")),
+            str(user.get("last_name", "")),
+        )
+        if status == "approved":
+            self.send_message(chat_id, "✅ 你已獲准使用 AI 分析，請輸入 /analyze 2330 開始。")
+        elif status == "pending":
+            self.send_message(chat_id, "🕒 你的 AI 分析使用申請仍在等待負責人審核。")
+        else:
+            request = self.ai_access_store.get_request(user_id)
+            notified = bool(
+                request and self._notify_owner_of_request({"user_id": str(user_id), **request})
+            )
+            self.send_message(
+                chat_id,
+                "🕒 已送出 AI 分析使用申請，待系統負責人核准或拒絕。"
+                if notified
+                else "⚠️ 申請已保存，但無法通知負責人；請稍後重試，負責人可用 /ai_requests 查詢。",
+            )
+
+    def _notify_owner_of_request(self, request: Dict[str, Any]) -> bool:
+        user_id = str(request["user_id"])
+        display_name = " ".join(
+            part for part in (request.get("first_name"), request.get("last_name")) if part
+        ) or "未提供姓名"
+        username = request.get("username")
+        if username:
+            display_name += f" (@{username})"
+        text = (
+            "📝 <b>AI 個股分析使用申請</b>\n"
+            f"申請人：{html.escape(display_name)}\n"
+            f"Telegram user ID：<code>{html.escape(user_id)}</code>"
+        )
+        return self.send_message(
+            self.owner_user_id,
+            text,
+            reply_markup={
+                "inline_keyboard": [[
+                    {"text": "✅ 允許", "callback_data": f"ai_access:approve:{user_id}"},
+                    {"text": "❌ 拒絕", "callback_data": f"ai_access:reject:{user_id}"},
+                ]]
+            },
+        )
+
+    def handle_callback_query(self, callback: Dict[str, Any]):
+        callback_id = callback.get("id")
+        actor_id = callback.get("from", {}).get("id")
+        data = str(callback.get("data", ""))
+        if not self._is_owner(actor_id):
+            self._answer_callback_query(callback_id, "僅限系統負責人操作。")
+            return
+
+        parts = data.split(":")
+        if len(parts) != 3 or parts[0] != "ai_access" or parts[1] not in {"approve", "reject"}:
+            self._answer_callback_query(callback_id, "無效的審核操作。")
+            return
+        user_id = parts[2]
+        approved = parts[1] == "approve"
+        request = self.ai_access_store.get_request(user_id)
+        if not self.ai_access_store.decide(user_id, approved):
+            self._answer_callback_query(callback_id, "申請已處理或不存在。")
+            return
+
+        decision = "已核准" if approved else "已拒絕"
+        self._answer_callback_query(callback_id, decision)
+        if request:
+            applicant_message = (
+                f"✅ 你的 AI 分析使用申請{decision}，可輸入 /analyze 2330 開始。"
+                if approved
+                else "❌ 你的 AI 分析使用申請已被拒絕；如有需要可再次申請。"
+            )
+            self.send_message(request["chat_id"], applicant_message)
+        self.send_message(self.owner_user_id, f"已處理 user ID {html.escape(user_id)}：{decision}。")
+
+    def _answer_callback_query(self, callback_id: Optional[str], text: str):
+        if not self.token or not callback_id:
+            return
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.token}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text},
+            timeout=20,
+        )
+        response.raise_for_status()
 
     def _send_stock_analysis(self, chat_id: Union[int, str], ticker: str):
         self.send_message(chat_id, f"⏳ 正在根據本機已採集資料分析 {ticker}，請稍候...")
@@ -219,18 +381,31 @@ class TelegramBotHandler:
                 updates = r.json().get("result", [])
                 for update in updates:
                     self.last_update_id = update.get("update_id", self.last_update_id)
+                    callback = update.get("callback_query")
+                    if callback:
+                        self.handle_callback_query(callback)
+                        continue
                     message = update.get("message", {})
                     text = message.get("text", "").strip()
                     chat = message.get("chat", {})
                     chat_id = chat.get("id")
+                    sender = message.get("from", {})
+                    user_id = sender.get("id")
 
                     if text and chat_id and (
                         text.startswith("/")
                         or text in MENU_BUTTONS
-                        or chat_id in self.pending_analysis_chats
+                        or self.pending_analysis_chats.get(chat_id) == str(user_id or "")
                     ):
                         command = text.split()[0] if text.startswith("/") else text
-                        self.handle_command(chat_id, command, text)
+                        self.handle_command(
+                            chat_id,
+                            command,
+                            text,
+                            user_id=user_id,
+                            chat_type=chat.get("type", "private"),
+                            user=sender,
+                        )
         except Exception as e:
             logger.debug(f"Telegram polling error: {e}")
 
@@ -238,14 +413,30 @@ class TelegramBotHandler:
         if not self.token:
             return
 
+        public_commands = [
+            command for command in BOT_COMMANDS
+            if command["command"] in {"analyze", "request_ai"}
+        ]
         response = requests.post(
             f"https://api.telegram.org/bot{self.token}/setMyCommands",
-            json={"commands": BOT_COMMANDS},
+            json={"commands": public_commands},
             timeout=20,
         )
         response.raise_for_status()
         if not response.json().get("ok"):
             raise RuntimeError("Telegram rejected bot command registration")
+        if self.owner_user_id:
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.token}/setMyCommands",
+                json={
+                    "commands": BOT_COMMANDS,
+                    "scope": {"type": "chat", "chat_id": int(self.owner_user_id)},
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            if not response.json().get("ok"):
+                raise RuntimeError("Telegram rejected owner command registration")
 
     def run_polling_loop(self):
         self.running = True
