@@ -12,7 +12,6 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.config import TELEGRAM_HOME_CHANNEL
 from src.core.orchestrator import Orchestrator
 from src.analysis.ranker import run_ranking
 from src.analysis.intraday import run_intraday_monitoring
@@ -157,12 +156,8 @@ class GVWScheduler:
         logger.info("[JOB] Running Intraday Monitor...")
         alerts = run_intraday_monitoring()
         if alerts:
-            for alert in alerts:
-                send_telegram_message(alert)
-            channel_id = str(TELEGRAM_HOME_CHANNEL).strip() if TELEGRAM_HOME_CHANNEL else ""
+            # 盤中突破信號僅推播給有開啟「盤中監控 (on)」的使用者，不推播至頻道或未開啟者
             for chat_id in self.alert_store.get_subscribers():
-                if str(chat_id) == channel_id:
-                    continue
                 for alert in alerts:
                     send_telegram_message(alert, chat_id=chat_id)
         self.hb.update_job_status("intraday_monitor", "ok", message=f"Generated {len(alerts)} alerts")
