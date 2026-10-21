@@ -44,6 +44,51 @@ class TestBotAndScheduler(unittest.TestCase):
             123, "📊 選股報告 / Top 10", "📊 選股報告 / Top 10"
         )
 
+    def test_ai_analysis_keyboard_prompts_for_ticker_then_analyzes_it(self):
+        bot = TelegramBotHandler(token="test-token")
+        bot.send_message = Mock()
+
+        with patch("gvw_bot.bot_handler.analyze_stock", return_value="多空分析") as analyze:
+            bot.handle_command(123, "🤖 AI 個股分析", "🤖 AI 個股分析")
+
+            analyze.assert_not_called()
+
+        self.assertIn(123, bot.pending_analysis_chats)
+        self.assertIn("請輸入 4 至 6 位數", bot.send_message.call_args.args[1])
+
+        response = Mock(
+            status_code=200,
+            json=lambda: {
+                "result": [{
+                    "update_id": 1,
+                    "message": {"text": "2330", "chat": {"id": 123}},
+                }]
+            },
+        )
+        with (
+            patch("gvw_bot.bot_handler.analyze_stock", return_value="多空分析") as analyze,
+            patch("gvw_bot.bot_handler.requests.get", return_value=response),
+        ):
+            bot.poll_once()
+
+        analyze.assert_called_once_with("2330")
+        self.assertNotIn(123, bot.pending_analysis_chats)
+        self.assertIn("多空分析", bot.send_message.call_args.args[1])
+        self.assertIn("非投資建議", bot.send_message.call_args.args[1])
+
+    def test_ai_analysis_command_surfaces_provider_configuration_error(self):
+        bot = TelegramBotHandler(token="test-token")
+        bot.send_message = Mock()
+
+        with patch(
+            "gvw_bot.bot_handler.analyze_stock",
+            side_effect=RuntimeError("尚未設定 OPENAI_API_KEY"),
+        ) as analyze:
+            bot.handle_command(123, "/analyze", "/analyze 2330")
+
+        analyze.assert_called_once_with("2330")
+        self.assertIn("OPENAI_API_KEY", bot.send_message.call_args.args[1])
+
     def setUp(self):
         self.test_hb_file = os.path.join(os.path.dirname(__file__), "test_heartbeat.json")
         self.hb = HeartbeatManager(heartbeat_file=self.test_hb_file)

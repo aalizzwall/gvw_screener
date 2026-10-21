@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import html
 from typing import Optional, Dict, Any, List, Union
 import requests
 
@@ -12,6 +13,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from src.config import TELEGRAM_BOT_TOKEN, TELEGRAM_HOME_CHANNEL
+from src.analysis.ai_analyst import analyze_stock
 from src.reporting.report_engine import generate_daily_report
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
@@ -26,6 +28,7 @@ BOT_COMMANDS = [
     {"command": "collect", "description": "手動採集股票資料"},
     {"command": "rank", "description": "重新計算股票排名"},
     {"command": "jobs", "description": "查看排程任務"},
+    {"command": "analyze", "description": "使用 AI 評估個股，例如 /analyze 2330"},
 ]
 MENU_BUTTONS = {
     "📊 選股報告 / Top 10": "/report",
@@ -34,12 +37,14 @@ MENU_BUTTONS = {
     "📥 採集資料": "/collect",
     "🏆 重新排名": "/rank",
     "⏰ 排程任務": "/jobs",
+    "🤖 AI 個股分析": "/analyze",
 }
 REPLY_KEYBOARD = {
     "keyboard": [
         ["📊 選股報告 / Top 10", "🩺 系統狀態"],
         ["🔍 盤中監控", "📥 採集資料"],
         ["🏆 重新排名", "⏰ 排程任務"],
+        ["🤖 AI 個股分析"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -57,6 +62,7 @@ class TelegramBotHandler:
         self.hb = heartbeat_mgr
         self.last_update_id = 0
         self.running = False
+        self.pending_analysis_chats = set()
 
     def send_message(self, chat_id: Union[int, str], text: str, parse_mode: str = "HTML") -> bool:
         if not self.token:
@@ -95,6 +101,7 @@ class TelegramBotHandler:
                 "/collect - 手動觸發數據採集輪詢\n"
                 "/rank - 手動觸發重新計算排名\n"
                 "/jobs - 查看各排程執行時間\n"
+                "/analyze <代碼> - AI 個股分析，例如 /analyze 2330\n"
             )
             self.send_message(chat_id, msg)
 
@@ -153,8 +160,40 @@ class TelegramBotHandler:
             count = len(res.get("data", []))
             self.send_message(chat_id, f"✅ 排名計算完成，已評估 {count} 檔標的。可輸入 /report 查看。")
 
+        elif cmd == "/analyze":
+            parts = text.split(maxsplit=1) if text.startswith("/") else [text]
+            if len(parts) == 1:
+                self.pending_analysis_chats.add(chat_id)
+                self.send_message(chat_id, "請輸入 4 至 6 位數的台股代碼進行 AI 分析，例如 2330。")
+                return
+            self._send_stock_analysis(chat_id, parts[1].strip())
+
+        elif chat_id in self.pending_analysis_chats:
+            ticker = text.strip()
+            if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
+                self.send_message(chat_id, "請輸入 4 至 6 位數的台股代碼，例如 2330；或輸入 /help 查看功能。")
+                return
+            self.pending_analysis_chats.discard(chat_id)
+            self._send_stock_analysis(chat_id, ticker)
+
         else:
             self.send_message(chat_id, "未知指令，請輸入 /help 查看說明。")
+
+    def _send_stock_analysis(self, chat_id: Union[int, str], ticker: str):
+        self.send_message(chat_id, f"⏳ 正在根據本機已採集資料分析 {ticker}，請稍候...")
+        try:
+            report = analyze_stock(ticker)
+        except (RuntimeError, ValueError) as exc:
+            self.send_message(chat_id, str(exc))
+            return
+
+        disclaimer = "AI 分析僅供參考，非投資建議。"
+        if disclaimer not in report:
+            report = f"{report}\n\n{disclaimer}"
+        self.send_message(
+            chat_id,
+            f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{html.escape(report)}",
+        )
 
     def poll_once(self):
         if not self.token:
@@ -174,7 +213,11 @@ class TelegramBotHandler:
                     chat = message.get("chat", {})
                     chat_id = chat.get("id")
 
-                    if text and chat_id and (text.startswith("/") or text in MENU_BUTTONS):
+                    if text and chat_id and (
+                        text.startswith("/")
+                        or text in MENU_BUTTONS
+                        or chat_id in self.pending_analysis_chats
+                    ):
                         command = text.split()[0] if text.startswith("/") else text
                         self.handle_command(chat_id, command, text)
         except Exception as e:
