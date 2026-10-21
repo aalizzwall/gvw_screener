@@ -145,6 +145,7 @@ class TelegramBotHandler:
             "/report", "/today", "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
+            "/ai_local",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。")

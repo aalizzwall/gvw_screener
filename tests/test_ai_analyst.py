@@ -334,7 +334,7 @@ class TestAIProviderPreferenceStore(unittest.TestCase):
     def test_local_base_url_persistence(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            self.assertEqual(store.get_local_base_url(), "http://localhost:1234/v1")
+            self.assertEqual(store.get_local_base_url(), "")
 
             updated = store.set_local_base_url("http://192.168.1.88:1234/v1")
             self.assertEqual(updated, "http://192.168.1.88:1234/v1")

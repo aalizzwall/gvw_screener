@@ -370,7 +370,7 @@ class TestBotAndScheduler(unittest.TestCase):
 
         bot.handle_command(10, "/ai_local", "/ai_local", user_id=10)
         self.assertIn("地端 LM-Studio 端點", bot.send_message.call_args.args[1])
-        self.assertIn("1234", bot.send_message.call_args.args[1])
+        self.assertIn("目前設定", bot.send_message.call_args.args[1])
 
         bot.handle_command(10, "/ai_local", "/ai_local http://192.168.1.100:1234/v1", user_id=10)
         self.assertEqual(provider_store.get_local_base_url(), "http://192.168.1.100:1234/v1")

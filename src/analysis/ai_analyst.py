@@ -258,7 +258,7 @@ def analyze_stock(
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 
     pref_store = AIProviderPreferenceStore()
-    local_base_url = pref_store.get_local_base_url()
+    local_base_url = pref_store.get_local_base_url() or LOCAL_AI_BASE_URL
 
     candidates = []
     for entry in chain or pref_store.get_chain():
@@ -293,7 +293,7 @@ def analyze_stock(
 def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Probe each chain entry with a tiny request; used by the owner's /ai_check command."""
     pref_store = AIProviderPreferenceStore()
-    local_base_url = pref_store.get_local_base_url()
+    local_base_url = pref_store.get_local_base_url() or LOCAL_AI_BASE_URL
     results = []
     for entry in chain or pref_store.get_chain():
         name, model = parse_entry(entry)

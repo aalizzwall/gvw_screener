@@ -134,7 +134,7 @@ class AIProviderPreferenceStore:
                     return str(data["local_base_url"]).strip()
         except (FileNotFoundError, ValueError):
             pass
-        return LOCAL_AI_BASE_URL
+        return os.environ.get("LOCAL_AI_BASE_URL") or os.environ.get("LM_STUDIO_BASE_URL") or LOCAL_AI_BASE_URL
 
     def set_local_base_url(self, url: str) -> str:
         cleaned = str(url).strip()
