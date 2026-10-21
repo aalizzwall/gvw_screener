@@ -9,6 +9,7 @@ import numpy as np
 
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
+from src.providers.yahoo_adapter import TickerNotFoundError
 from src.config import SIGNAL_CACHE_FILE
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,10 @@ def run_intraday_monitoring(
         score = float(row.get('final_score', 0))
 
         # 1. Try real price history from providers
-        prices = factory.fetch_price_history(ticker, days=30)
+        try:
+            prices = factory.fetch_price_history(ticker, days=30)
+        except TickerNotFoundError:
+            prices = []
         if prices and len(prices) >= 21:
             df = pd.DataFrame(prices)
         else:
@@ -131,4 +135,3 @@ def run_intraday_monitoring(
         logger.error(f"Error saving {SIGNAL_CACHE_FILE}: {e}")
 
     return alerts_to_send
-

@@ -155,7 +155,7 @@ class ProviderResilienceTests(unittest.TestCase):
         self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
         self.assertEqual(factory.stock_calls, 4)
 
-    def test_partial_financial_success_preserves_consecutive_yahoo_404_count(self):
+    def test_partial_financial_success_marks_dead_on_third_yahoo_404(self):
         stock_data = {
             "source": "twse",
             "financials": {"income_statement": {"revenue": 1}, "balance_sheet": {}},
@@ -170,7 +170,7 @@ class ProviderResilienceTests(unittest.TestCase):
             def fetch_all_data(self, ticker):
                 self.stock_calls += 1
                 self.fetch_count += 1
-                return stock_data if self.fetch_count == 1 else None
+                return stock_data
 
             def fetch_price_history(self, ticker, days=365):
                 self.price_calls += 1
@@ -187,11 +187,11 @@ class ProviderResilienceTests(unittest.TestCase):
         self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 1)
         self.assertEqual(
             orchestrator.update_stock("6488", force=True, health_status=state.health),
-            "FAIL",
+            "PARTIAL",
         )
         self.assertEqual(
             orchestrator.update_stock("6488", force=True, health_status=state.health),
-            "FAIL",
+            "PARTIAL",
         )
         self.assertEqual(state.health["6488"]["yahoo_not_found_count"], 3)
         self.assertEqual(state.health["6488"]["status"], "dead")

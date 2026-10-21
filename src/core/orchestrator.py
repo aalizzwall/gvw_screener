@@ -148,6 +148,7 @@ class Orchestrator:
             not_found_count = min(not_found_count + 1, YAHOO_NOT_FOUND_THRESHOLD)
         elif prices_due:
             not_found_count = 0
+        is_dead = not_found_count >= YAHOO_NOT_FOUND_THRESHOLD
         existing_data.setdefault('financial_data_updated_at', updated_at_str)
         existing_data.setdefault('price_data_updated_at', updated_at_str)
 
@@ -189,7 +190,7 @@ class Orchestrator:
             self.state.update_stock_health(
                 ticker, {
                     'failures': 0,
-                    'status': 'healthy',
+                    'status': 'dead' if is_dead else 'healthy',
                     'retry_after': None,
                     'yahoo_not_found_count': not_found_count,
                 }
@@ -202,7 +203,7 @@ class Orchestrator:
             self.state.update_stock_health(
                 ticker, {
                     'failures': current_failures,
-                    'status': 'degraded',
+                    'status': 'dead' if is_dead else 'degraded',
                     'retry_after': None,
                     'yahoo_not_found_count': not_found_count,
                 }
@@ -215,7 +216,6 @@ class Orchestrator:
         else:
             current_failures = health.get('failures', 0) + 1
             backoff_hours = min(2 ** min(current_failures - 1, 5), 24)
-            is_dead = not_found_count >= YAHOO_NOT_FOUND_THRESHOLD
             retry_after = (
                 None if is_dead
                 else (datetime.now() + timedelta(hours=backoff_hours)).isoformat()

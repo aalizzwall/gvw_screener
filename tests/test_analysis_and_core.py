@@ -1,7 +1,10 @@
 import unittest
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 import pandas as pd
 import numpy as np
 from src.core.orchestrator import Orchestrator
+from src.analysis.intraday import run_intraday_monitoring
 from src.analysis.ranker import (
     calculate_momentum_score,
     calculate_trend_score,
@@ -12,6 +15,7 @@ from src.analysis.signals import check_kline_three_steps
 from src.reporting.report_engine import get_suggested_price
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
+from src.providers.yahoo_adapter import TickerNotFoundError
 
 class TestAnalysisAndCore(unittest.TestCase):
 
@@ -44,6 +48,27 @@ class TestAnalysisAndCore(unittest.TestCase):
         self.assertIsNotNone(factory.finmind)
         self.assertIsNotNone(factory.yahoo)
 
+    def test_intraday_uses_local_prices_when_ticker_is_missing(self):
+        state = Mock()
+        state.get_ranks.return_value = {
+            'data': [{'ticker': '2330', 'name': 'TSMC', 'final_score': 0.9, 't_score': 1.0}]
+        }
+        state.get_stock_data.return_value = {
+            'prices': [
+                {'date': str(day), 'close': 100, 'volume': 100 if day < 16 else 50}
+                for day in range(21)
+            ]
+        }
+        factory = Mock()
+        factory.fetch_price_history.side_effect = TickerNotFoundError('2330')
+
+        with TemporaryDirectory() as temp_dir:
+            with patch('src.analysis.intraday.SIGNAL_CACHE_FILE', f'{temp_dir}/signals.json'):
+                alerts = run_intraday_monitoring(state, factory)
+
+        saved_report = state.save_ranks.call_args.args[0]
+        self.assertEqual(saved_report['data'][0]['kline_status'], 'ACCUMULATING')
+        self.assertEqual(len(alerts), 1)
+
 if __name__ == "__main__":
     unittest.main()
-
