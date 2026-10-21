@@ -1,5 +1,6 @@
 import logging
 import math
+import requests
 from typing import Dict, Any, List, Optional
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.finmind_adapter import FinMindAdapter
@@ -22,6 +23,44 @@ class DataProviderFactory:
         self.twse = twse_adapter or TWSEAdapter()
         self.finmind = finmind_adapter or FinMindAdapter()
         self.yahoo = yahoo_adapter or YahooAdapter()
+
+    def fetch_universe(self) -> Dict[str, str]:
+        sources = (
+            ("TWSE", "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"),
+            ("TPEx", "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"),
+        )
+        universe = {}
+        for exchange, url in sources:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list) or not rows:
+                raise ValueError(f"{exchange} returned an empty or invalid stock list")
+
+            exchange_universe = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ticker = next(
+                    (str(row[key]).strip() for key in (
+                        "公司代號", "公司代碼", "SecuritiesCompanyCode", "CompanyId",
+                    ) if row.get(key)),
+                    "",
+                )
+                name = next(
+                    (str(row[key]).strip() for key in (
+                        "公司名稱", "公司簡稱", "CompanyName",
+                    ) if row.get(key)),
+                    "",
+                )
+                if ticker.isdigit() and name:
+                    exchange_universe[ticker] = name
+
+            if not exchange_universe:
+                raise ValueError(f"{exchange} stock list contained no usable entries")
+            universe.update(exchange_universe)
+
+        return universe
 
     @staticmethod
     def _has_stock_data(data: Any) -> bool:

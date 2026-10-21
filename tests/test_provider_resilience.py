@@ -11,10 +11,17 @@ from src.providers.yahoo_adapter import YahooAdapter
 
 
 class FakeState:
-    def __init__(self, stock_data=None, ranks=None):
+    def __init__(self, stock_data=None, ranks=None, universe=None):
         self.stock_data = dict(stock_data or {})
         self.ranks = dict(ranks or {})
+        self.universe = dict(universe or {})
         self.health = {}
+
+    def get_universe(self):
+        return dict(self.universe)
+
+    def save_universe(self, universe):
+        self.universe = dict(universe)
 
     def get_stock_data(self, ticker):
         return dict(self.stock_data)
@@ -39,6 +46,9 @@ class FakeFactory:
         self.stock_calls = 0
         self.price_calls = 0
 
+    def fetch_universe(self):
+        return {"2330": "台積電"}
+
     def fetch_all_data(self, ticker):
         self.stock_calls += 1
         return self.stock_data
@@ -49,6 +59,34 @@ class FakeFactory:
 
 
 class ProviderResilienceTests(unittest.TestCase):
+    def test_empty_universe_is_initialized_and_persisted(self):
+        state = FakeState()
+        orchestrator = Orchestrator(state_manager=state, provider_factory=FakeFactory({}, []))
+
+        universe = orchestrator.ensure_universe()
+
+        self.assertEqual(universe, {"2330": "台積電"})
+        self.assertEqual(state.universe, universe)
+
+    def test_factory_merges_twse_and_tpex_company_lists(self):
+        responses = [
+            unittest.mock.Mock(
+                json=lambda: [{"公司代號": "2330", "公司名稱": "台積電"}]
+            ),
+            unittest.mock.Mock(
+                json=lambda: [{"公司代號": "6488", "公司名稱": "環球晶"}]
+            ),
+        ]
+        for response in responses:
+            response.raise_for_status.return_value = None
+        factory = DataProviderFactory()
+
+        with patch("src.providers.factory.requests.get", side_effect=responses) as get:
+            universe = factory.fetch_universe()
+
+        self.assertEqual(universe, {"2330": "台積電", "6488": "環球晶"})
+        self.assertEqual(get.call_count, 2)
+
     def test_twse_selects_matching_stock_from_openapi_lists(self):
         responses = {
             "financials_pl": [

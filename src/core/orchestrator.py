@@ -75,6 +75,19 @@ class Orchestrator:
         else:
             logger.warning("⚠️ Market index stats update returned empty.")
 
+    def ensure_universe(self) -> Dict[str, str]:
+        universe = self.state.get_universe()
+        if universe:
+            return universe
+
+        logger.info("Stock universe is empty; loading TWSE and TPEx listings.")
+        universe = self.factory.fetch_universe()
+        if not universe:
+            raise ValueError("TWSE and TPEx returned an empty stock universe")
+        self.state.save_universe(universe)
+        logger.info("Initialized stock universe with %d tickers.", len(universe))
+        return universe
+
     def update_stock(
         self,
         ticker: str,
@@ -194,7 +207,7 @@ class Orchestrator:
         Runs global oldest-first polling cycle across universe.
         """
         self.update_market_index()
-        universe_map = self.state.get_universe()
+        universe_map = self.ensure_universe()
 
         if not universe_map:
             logger.error("❌ Critical Error: Universe map is empty.")

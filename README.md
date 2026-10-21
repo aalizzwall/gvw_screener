@@ -228,3 +228,5 @@ journalctl --user -u gvw_bot -f
 5. 推送 workflow 後，首次部署會安裝 user service、建立 `.venv`、安裝依賴並啟動服務。
 
 Workflow 僅對 `main` 的 push 和手動執行觸發部署，不會在 Pull Request 中執行 self-hosted runner。請保護 `main` 分支，並限制可修改 workflow 或合併程式碼的人員。
+
+若部署目錄沒有 `universe.json`，首次採集會從 TWSE 與 TPEx 官方 OpenAPI 載入上市及上櫃公司清單並保存。任一來源不可用或回傳無效資料時，採集工作會報錯，不會寫入不完整清單。
