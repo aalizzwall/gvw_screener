@@ -3,6 +3,7 @@ import sys
 import glob
 import json
 import time
+import re
 import sqlite3
 import logging
 from typing import Dict, Any, List, Optional, Union
@@ -11,6 +12,8 @@ from src.config import DATA_DIR, LOGS_DIR
 from src.state.state_manager import StateManager
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.diagnostics.doctor import GVWDoctor
+from src.agent.tool_registry import ToolRegistry
+from src.agent.session_context import SessionContext
 from src.analysis.ai_analyst import (
     _PROVIDERS,
     _provider_key,
@@ -23,8 +26,12 @@ logger = logging.getLogger("gvw.agent.maintenance")
 
 class MaintenanceAgent:
     """
-    Interactive Copilot / Maintenance Agent that diagnoses data issues,
-    system anomalies, and pipeline state through dynamic Tool Calling (ReAct).
+    Interactive Copilot / Maintenance Agent inspired by Pi Agent's architecture.
+    Features:
+    - Minimalist ReAct Tool-Calling loop with error self-correction.
+    - Modular ToolRegistry with dynamic schema generation.
+    - Multi-turn SessionContext with sliding window context compaction.
+    - Comprehensive safe read-only system diagnostic tools.
     """
 
     def __init__(
@@ -32,14 +39,74 @@ class MaintenanceAgent:
         state_manager: Optional[StateManager] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
         doctor: Optional[GVWDoctor] = None,
+        scheduler: Optional[Any] = None,
         logs_dir: str = LOGS_DIR,
         data_dir: str = DATA_DIR,
     ):
         self.state_manager = state_manager or StateManager()
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
-        self.doctor = doctor or GVWDoctor(data_dir=data_dir, logs_dir=logs_dir, ai_provider_store=self.ai_provider_store)
+        self.doctor = doctor or GVWDoctor(
+            data_dir=data_dir,
+            logs_dir=logs_dir,
+            ai_provider_store=self.ai_provider_store,
+        )
+        self.scheduler = scheduler
         self.logs_dir = logs_dir
         self.data_dir = data_dir
+
+        self.sessions: Dict[str, SessionContext] = {}
+        self.registry = ToolRegistry()
+        self._register_default_tools()
+
+    def _register_default_tools(self):
+        """Registers built-in safe read-only diagnostic tools into registry."""
+        self.registry.register_tool(
+            name="inspect_stock",
+            description="查看特定個股在資料庫中的完整快照 (basic_info、financials、prices 等實體欄位)。",
+            handler=self.tool_inspect_stock,
+            parameters={
+                "ticker": {"type": "string", "description": "台股代號，如 '2330'", "required": True}
+            },
+        )
+        self.registry.register_tool(
+            name="search_logs",
+            description="搜尋 logs/gvw_bot.log 最近符合關鍵字的日誌。",
+            handler=self.tool_search_logs,
+            parameters={
+                "keyword": {"type": "string", "description": "搜尋關鍵字，可為空", "required": False, "default": ""},
+                "max_lines": {"type": "integer", "description": "回傳最多行數", "required": False, "default": 30},
+            },
+        )
+        self.registry.register_tool(
+            name="inspect_db_schema",
+            description="查看 SQLite 資料庫表結構與記錄筆數。",
+            handler=self.tool_inspect_db_schema,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="get_provider_endpoints",
+            description="查看目前各資料源 (TWSE, FinMind, Yahoo) 呼叫的 API 端點及所提供的欄位。",
+            handler=self.tool_get_provider_endpoints,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="inspect_system_health",
+            description="查看硬體、排程、心跳與連線健康報告。",
+            handler=self.tool_inspect_system_health,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="inspect_scheduler_jobs",
+            description="查看系統定時排程任務列表、執行間隔、下次觸發時間與目前執行狀態。",
+            handler=self.tool_inspect_scheduler_jobs,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="inspect_ai_config",
+            description="查看當前 AI 模型優先鏈、主力模型、本地 LM-Studio/Ollama 端點及健康配置。",
+            handler=self.tool_inspect_ai_config,
+            parameters={},
+        )
 
     # ---------------------------------------------------------
     # Safe Read-Only Diagnostic Tools
@@ -127,7 +194,7 @@ class MaintenanceAgent:
                 "name": "Taiwan Stock Exchange OpenAPI (TWSE)",
                 "base_url": "https://openapi.twse.com.tw/v1",
                 "endpoints": {
-                    "basic_info": "/opendata/t187ap03_L (僅公司登記基本資料: 資本額、產業別、無PE/PB/殖利率)",
+                    "basic_info": "/opendata/t187ap03_L (公司基本資料: 資本額、產業別)",
                     "valuation": "/exchangeReport/BWIBBU_d (提供個股日 PE、PB、殖利率)",
                     "financials_pl": "/opendata/t187ap06_L_ci (綜合損益表)",
                     "financials_bs": "/opendata/t187ap07_L_ci (資產負債表)",
@@ -152,24 +219,61 @@ class MaintenanceAgent:
         """Runs doctor diagnostics covering hardware, scheduler, and database."""
         return self.doctor.run_diagnostics()
 
+    def tool_inspect_scheduler_jobs(self) -> Dict[str, Any]:
+        """Inspects status of registered scheduler jobs."""
+        if not self.scheduler or not hasattr(self.scheduler, "jobs"):
+            return {"available": False, "message": "目前環境未掛載排程器 (Scheduler)。"}
+
+        jobs_data = []
+        for j in self.scheduler.jobs:
+            timing = (
+                f"every {j.interval_minutes}m"
+                if j.interval_minutes
+                else f"daily {j.daily_time}"
+            )
+            jobs_data.append({
+                "name": j.name,
+                "schedule": timing,
+                "weekdays_only": getattr(j, "weekdays_only", False),
+                "is_running": getattr(j, "is_running", False),
+                "last_run": str(j.last_run) if getattr(j, "last_run", None) else "never",
+            })
+        return {
+            "available": True,
+            "job_count": len(jobs_data),
+            "jobs": jobs_data,
+        }
+
+    def tool_inspect_ai_config(self) -> Dict[str, Any]:
+        """Inspects current AI provider chain and local connection."""
+        chain = self.ai_provider_store.get_chain()
+        local_url = self.ai_provider_store.get_local_base_url()
+        return {
+            "primary_provider": chain[0] if chain else "none",
+            "provider_chain": chain,
+            "local_base_url": local_url,
+            "configured_providers": list(_PROVIDERS.keys()),
+        }
+
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
-        """Executes a diagnostic tool by name."""
-        logger.info(f"MaintenanceAgent invoking tool: {tool_name} with args {args}")
-        if tool_name == "inspect_stock":
-            ticker = args.get("ticker", "2330")
-            return self.tool_inspect_stock(ticker)
-        elif tool_name == "search_logs":
-            kw = args.get("keyword", "")
-            max_l = args.get("max_lines", 30)
-            return self.tool_search_logs(keyword=kw, max_lines=max_l)
-        elif tool_name == "inspect_db_schema":
-            return self.tool_inspect_db_schema()
-        elif tool_name == "get_provider_endpoints":
-            return self.tool_get_provider_endpoints()
-        elif tool_name == "inspect_system_health":
-            return self.tool_inspect_system_health()
-        else:
-            return f"未知工具名稱：{tool_name}"
+        """Executes a diagnostic tool via registry."""
+        logger.info(f"MaintenanceAgent executing tool: {tool_name} with args {args}")
+        return self.registry.execute(tool_name, args)
+
+    # ---------------------------------------------------------
+    # Multi-turn Session Management
+    # ---------------------------------------------------------
+    def get_or_create_session(self, session_id: str) -> SessionContext:
+        """Retrieves or creates a session context for continuous chat."""
+        if session_id not in self.sessions:
+            self.sessions[session_id] = SessionContext(session_id=session_id)
+        return self.sessions[session_id]
+
+    def clear_session(self, session_id: str):
+        """Clears memory for a specific session."""
+        if session_id in self.sessions:
+            self.sessions[session_id].clear()
+            logger.info(f"Cleared session context for {session_id}")
 
     # ---------------------------------------------------------
     # ReAct / Tool-Calling Reasoning Loop
@@ -195,82 +299,103 @@ class MaintenanceAgent:
 
         raise RuntimeError("所有 AI Provider 均無法調用，無法進行維護模式診斷。")
 
-    def ask(self, user_question: str) -> str:
+    def _parse_json_response(self, raw_text: str) -> Optional[Dict[str, Any]]:
         """
-        Processes user natural language question through dynamic tool-calling.
-        Returns detailed, diagnostic answer formatted in Telegram HTML.
+        Robust JSON extractor for LLM outputs.
+        Handles markdown code fences, trailing commas, and text wrappers.
         """
-        tools_description = """
-你可以調用以下安全唯讀的診斷工具來檢視底層真實數據與日誌：
-1. inspect_stock(ticker: str) -> 查看特定個股在資料庫中的完整快照 (basic_info、financials、prices 等實體欄位)。
-2. search_logs(keyword: str, max_lines: int) -> 搜尋 logs/gvw_bot.log 最近符合關鍵字的日誌。
-3. inspect_db_schema() -> 查看 SQLite 資料庫表結構與記錄筆數。
-4. get_provider_endpoints() -> 查看目前各資料源 (TWSE, FinMind, Yahoo) 呼叫的 API 端點及所提供的欄位。
-5. inspect_system_health() -> 查看硬體、排程、心跳與連線健康報告。
+        cleaned = raw_text.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
 
-【Action 協議規範】
-當你需要調用工具查詢時，請只回傳以下 JSON 格式 (不要有其他文字)：
-{
-  "action": "<tool_name>",
-  "args": {"<arg_name>": "<arg_value>"}
-}
+        # Try direct parse
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and "action" in parsed:
+                return parsed
+        except Exception:
+            pass
 
-當你調用工具並獲得足夠的數據依據後，請回傳最終診斷結論，格式為：
-{
-  "action": "final_answer",
-  "answer": "<你的繁體中文診斷分析與修復建議>"
-}
-"""
-
-        system_prompt = (
-            "你是 GVW 智能選股系統的首席維護與資料庫診斷專家 (Maintenance Copilot)。\n"
-            "你的任務是協助系統負責人排查資料缺失、排程異常或管線問題。\n"
-            "請基於真實資料說話，不可憑空猜測。必須使用工具查證系統與資料庫現況後再做結論。\n"
-            + tools_description
-        )
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"負責人問題：{user_question}"},
-        ]
-
-        # Multi-turn tool execution loop (max 4 turns)
-        for turn in range(4):
-            logger.info(f"MaintenanceAgent turn {turn + 1}...")
-            raw_response = self._call_llm(messages)
-
-            # Parse JSON
-            action_dict = None
+        # Try regex search for {"action": ...}
+        match = re.search(r"\{[\s\S]*\"action\"[\s\S]*\}", cleaned)
+        if match:
+            candidate = match.group(0)
+            # Remove trailing commas before closing braces/brackets
+            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
             try:
-                cleaned = raw_response.strip()
-                if "```json" in cleaned:
-                    cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-                elif "```" in cleaned:
-                    cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
-                action_dict = json.loads(cleaned)
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict) and "action" in parsed:
+                    return parsed
             except Exception:
                 pass
 
-            if not isinstance(action_dict, dict) or "action" not in action_dict:
-                # If LLM replied in plain text without JSON, treat as final answer
-                return raw_response.strip()
+        return None
+
+    def ask(self, user_question: str, session_id: Optional[str] = None) -> str:
+        """
+        Processes user question through dynamic tool-calling and continuous session memory.
+        Returns detailed, diagnostic answer formatted in Telegram HTML.
+        """
+        # Session context
+        if session_id:
+            session = self.get_or_create_session(session_id)
+        else:
+            session = SessionContext(session_id="ephemeral")
+
+        session.add_user_message(f"負責人問題：{user_question}")
+
+        tools_doc = self.registry.generate_prompt_documentation()
+        system_prompt = (
+            "你是 GVW 智能選股系統的首席維護與資料庫診斷專家 (Maintenance Copilot)。\n"
+            "你的任務是協助系統負責人排查資料缺失、排程異常或管線問題。\n"
+            "請基於真實資料說話，不可憑空猜測。必須使用工具查證系統與資料庫現況後再做結論。\n\n"
+            + tools_doc
+            + "\n\n"
+            "【Action 協議規範】\n"
+            "當你需要調用工具查詢時，請只回傳以下 JSON 格式 (不要有其他多餘文字)：\n"
+            "{\n"
+            '  "action": "<tool_name>",\n'
+            '  "args": {"<arg_name>": "<arg_value>"}\n'
+            "}\n\n"
+            "當你調用工具並獲得足夠的數據依據後，請回傳最終診斷結論，格式為：\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "answer": "<你的繁體中文診斷分析與具體修復建議>"\n'
+            "}"
+        )
+
+        max_turns = 5
+        for turn in range(max_turns):
+            logger.info(f"MaintenanceAgent turn {turn + 1}/{max_turns}...")
+            messages = session.get_messages(system_prompt)
+            raw_response = self._call_llm(messages)
+
+            action_dict = self._parse_json_response(raw_response)
+
+            if not action_dict:
+                # Model directly returned plain text diagnosis
+                answer = raw_response.strip()
+                session.add_assistant_message(answer)
+                return answer
 
             action = action_dict.get("action")
             if action == "final_answer":
-                return action_dict.get("answer", raw_response).strip()
+                answer = action_dict.get("answer", raw_response).strip()
+                session.add_assistant_message(answer)
+                return answer
 
-            # Execute tool
+            # Execute tool safely
             args = action_dict.get("args", {})
+            if not isinstance(args, dict):
+                args = {}
             tool_res = self._execute_tool(action, args)
-            tool_str = json.dumps(tool_res, ensure_ascii=False) if isinstance(tool_res, (dict, list)) else str(tool_res)
 
-            # Truncate tool response if too large
-            if len(tool_str) > 2000:
-                tool_str = tool_str[:2000] + "... (truncated)"
+            # Record turn in session memory
+            session.add_assistant_message(json.dumps(action_dict, ensure_ascii=False))
+            session.add_observation(action, tool_res)
 
-            # Feed observation back to model
-            messages.append({"role": "assistant", "content": json.dumps(action_dict, ensure_ascii=False)})
-            messages.append({"role": "user", "content": f"Observation from {action}:\n{tool_str}\n\n請根據以上真實觀測結果繼續分析。若資訊已足夠，請回傳 final_answer。"})
-
-        return "⚠️ 已達到最大工具調用深度，未能完成診斷，請嘗試縮小問題範圍。"
-
+        warning_msg = "⚠️ 已達到最大工具調用深度（5 回合），未能完全收斂診斷，請嘗試進一步縮小問題範圍或重置對話。"
+        session.add_assistant_message(warning_msg)
+        return warning_msg
