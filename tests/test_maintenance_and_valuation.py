@@ -352,35 +352,58 @@ class TestValuationServiceAndIntegration(unittest.TestCase):
             self.assertEqual(fin["yield"], 0.9)
             self.assertEqual(fin["roe"], 20.0)
 
-    def test_ai_snapshot_with_valuation_fallback(self):
+    def test_ai_snapshot_handles_valuation_and_loss(self):
         temp_dir = tempfile.mkdtemp()
         state = StateManager(data_dir=temp_dir)
+        # 1. Profitable company with valuation
         state.save_stock_data("2330", {
             "ticker": "2330",
             "price_data_as_of": "2026-10-21",
             "financial_data_updated_at": "2026-10-21",
-            "basic_info": {"name": "台積電", "pe": 0.0, "pb": 0.0, "yield": 0.0},
+            "basic_info": {"name": "台積電", "pe": 28.05, "pb": 9.76, "yield": 0.91},
             "financials": {
                 "income_statement": {"net_income": 1000},
                 "balance_sheet": {"total_equity": 5000},
             },
             "prices": [{"date": "2026-10-21", "close": 1050}],
         })
-        with patch("src.providers.valuation_service.get_valuation_service") as mock_get_svc:
-            mock_svc = Mock()
-            mock_svc.get_valuation.return_value = {
-                "pe": 28.05, "pb": 9.76, "yield": 0.91, "is_loss": False
-            }
-            mock_get_svc.return_value = mock_svc
+        snap1 = _stock_snapshot("2330", state)
+        self.assertNotIn("股價淨值比", snap1["missing_data"])
+        self.assertNotIn("本益比", snap1["missing_data"])
+        self.assertNotIn("股利殖利率", snap1["missing_data"])
 
-            snapshot = _stock_snapshot("2330", state)
-            self.assertEqual(snapshot["basic_info"]["pb"], 9.76)
-            self.assertEqual(snapshot["basic_info"]["pe"], 28.05)
-            self.assertEqual(snapshot["basic_info"]["yield"], 0.91)
-            # Valuation metrics should NOT be in missing_data
-            self.assertNotIn("股價淨值比 (P/B)", snapshot["missing_data"])
-            self.assertNotIn("本益比 (P/E)", snapshot["missing_data"])
-            self.assertNotIn("股利殖利率", snapshot["missing_data"])
+        # 2. Loss company with PB > 0, PE == 0
+        state.save_stock_data("1101", {
+            "ticker": "1101",
+            "price_data_as_of": "2026-10-21",
+            "financial_data_updated_at": "2026-10-21",
+            "basic_info": {"name": "台泥", "pe": 0.0, "pb": 0.87, "yield": 2.99, "is_loss": True},
+            "financials": {
+                "income_statement": {"net_income": -100},
+                "balance_sheet": {"total_equity": 5000},
+            },
+            "prices": [{"date": "2026-10-21", "close": 26.8}],
+        })
+        snap2 = _stock_snapshot("1101", state)
+        self.assertNotIn("本益比", snap2["missing_data"])
+        self.assertIn("虧損或無本益比狀態", snap2["basic_info"]["pe_note"])
+
+        # 3. Company missing valuation
+        state.save_stock_data("9999", {
+            "ticker": "9999",
+            "price_data_as_of": "2026-10-21",
+            "financial_data_updated_at": "2026-10-21",
+            "basic_info": {"name": "未知", "pe": 0.0, "pb": 0.0, "yield": 0.0},
+            "financials": {
+                "income_statement": {"net_income": 100},
+                "balance_sheet": {"total_equity": 5000},
+            },
+            "prices": [{"date": "2026-10-21", "close": 50}],
+        })
+        snap3 = _stock_snapshot("9999", state)
+        self.assertIn("股價淨值比", snap3["missing_data"])
+        self.assertIn("本益比", snap3["missing_data"])
+        self.assertIn("股利殖利率", snap3["missing_data"])
 
 
 if __name__ == "__main__":
