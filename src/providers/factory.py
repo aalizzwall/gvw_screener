@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.finmind_adapter import FinMindAdapter
 from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
+from src.providers.valuation_service import ValuationService, get_valuation_service
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +19,43 @@ class DataProviderFactory:
         self,
         twse_adapter: Optional[TWSEAdapter] = None,
         finmind_adapter: Optional[FinMindAdapter] = None,
-        yahoo_adapter: Optional[YahooAdapter] = None
+        yahoo_adapter: Optional[YahooAdapter] = None,
+        valuation_service: Optional[ValuationService] = None,
     ):
         self.twse = twse_adapter or TWSEAdapter()
         self.finmind = finmind_adapter or FinMindAdapter()
         self.yahoo = yahoo_adapter or YahooAdapter()
+        self.valuation_service = valuation_service or get_valuation_service()
+
+    def get_valuation(self, ticker: str) -> Optional[Dict[str, Any]]:
+        return self.valuation_service.get_valuation(ticker)
+
+    def _enrich_valuation(self, ticker: str, data: Dict[str, Any]) -> None:
+        try:
+            val = self.get_valuation(ticker)
+            if not val:
+                return
+            basic_info = data.setdefault("basic_info", {})
+            if not isinstance(basic_info, dict):
+                basic_info = {}
+                data["basic_info"] = basic_info
+
+            def _is_zero(v: Any) -> bool:
+                try:
+                    return v in (None, "", "0", "0.0") or float(v or 0) == 0.0
+                except (ValueError, TypeError):
+                    return True
+
+            if _is_zero(basic_info.get("pb")):
+                basic_info["pb"] = val["pb"]
+            if _is_zero(basic_info.get("yield")):
+                basic_info["yield"] = val["yield"]
+            if _is_zero(basic_info.get("pe")):
+                basic_info["pe"] = val["pe"]
+                if val.get("is_loss"):
+                    basic_info["is_loss"] = True
+        except Exception as exc:
+            logger.debug("Failed to enrich valuation for %s: %s", ticker, exc)
 
     def fetch_universe(self) -> Dict[str, str]:
         sources = (
@@ -121,6 +154,7 @@ class DataProviderFactory:
             try:
                 data = provider.fetch_stock_data(ticker)
                 if self._has_stock_data(data):
+                    self._enrich_valuation(ticker, data)
                     return data
                 logger.warning("[FACTORY] %s returned no usable stock data for %s", name, ticker)
             except Exception as e:

@@ -11,6 +11,10 @@ from src.agent.maintenance_agent import MaintenanceAgent
 from src.agent.tool_registry import ToolRegistry, Tool
 from src.agent.session_context import SessionContext
 from src.providers.twse_adapter import TWSEAdapter
+from src.providers.valuation_service import ValuationService
+from src.providers.factory import DataProviderFactory
+from src.reporting.report_engine import get_financials, generate_daily_report
+from src.analysis.ai_analyst import _stock_snapshot
 from gvw_bot.bot_handler import TelegramBotHandler
 from src.state.state_manager import StateManager
 from src.state.ai_provider import AIProviderPreferenceStore
@@ -256,6 +260,150 @@ class TestTelegramBotMaintenanceMode(unittest.TestCase):
             mock_clear.assert_called_once_with("10")
             calls = [c.args[1] for c in self.bot.send_message.call_args_list]
             self.assertTrue(any("已重置維護對話記憶" in c for c in calls))
+
+
+class TestValuationServiceAndIntegration(unittest.TestCase):
+    def setUp(self):
+        self.service = ValuationService(cache_ttl_seconds=3600)
+
+    @patch("src.providers.valuation_service.requests.get")
+    def test_valuation_service_twse_and_tpex(self, mock_get):
+        # Mock TWSE response
+        twse_resp = Mock(status_code=200)
+        twse_resp.json.return_value = [
+            {"Code": "2330", "Name": "台積電", "PEratio": "28.05", "PBratio": "9.76", "DividendYield": "0.91", "Date": "20261021"},
+            {"Code": "1101", "Name": "台泥", "PEratio": "", "PBratio": "0.87", "DividendYield": "2.99", "Date": "20261021"},
+        ]
+        # Mock TPEx response
+        tpex_resp = Mock(status_code=200)
+        tpex_resp.json.return_value = [
+            {"SecuritiesCompanyCode": "6488", "CompanyName": "環球晶", "PriceEarningRatio": "42.72", "PriceBookRatio": "4.35", "YieldRatio": "0.88", "Date": "1151021"}
+        ]
+        mock_get.side_effect = [twse_resp, tpex_resp]
+
+        # 1. TWSE normal profitable stock
+        v2330 = self.service.get_valuation("2330")
+        self.assertIsNotNone(v2330)
+        self.assertEqual(v2330["pe"], 28.05)
+        self.assertEqual(v2330["pb"], 9.76)
+        self.assertEqual(v2330["yield"], 0.91)
+        self.assertFalse(v2330["is_loss"])
+        self.assertEqual(v2330["source"], "twse")
+
+        # 2. TWSE loss stock (empty PEratio, pb > 0)
+        v1101 = self.service.get_valuation("1101")
+        self.assertIsNotNone(v1101)
+        self.assertEqual(v1101["pe"], 0.0)
+        self.assertEqual(v1101["pb"], 0.87)
+        self.assertEqual(v1101["yield"], 2.99)
+        self.assertTrue(v1101["is_loss"])
+
+        # 3. TPEx stock (e.g. 6488)
+        v6488 = self.service.get_valuation("6488")
+        self.assertIsNotNone(v6488)
+        self.assertEqual(v6488["pe"], 42.72)
+        self.assertEqual(v6488["pb"], 4.35)
+        self.assertEqual(v6488["yield"], 0.88)
+        self.assertEqual(v6488["source"], "tpex")
+
+        # 4. Unknown stock
+        v9999 = self.service.get_valuation("9999")
+        self.assertIsNone(v9999)
+
+    def test_factory_enriches_valuation_when_empty(self):
+        mock_val_service = Mock()
+        mock_val_service.get_valuation.return_value = {
+            "pe": 28.05, "pb": 9.76, "yield": 0.91, "is_loss": False
+        }
+        mock_twse = Mock()
+        mock_twse.fetch_stock_data.return_value = {
+            "ticker": "2330",
+            "source": "twse",
+            "basic_info": {"name": "台積電", "pe": 0.0, "pb": 0.0, "yield": 0.0},
+            "financials": {"income_statement": {"revenue": 1000}},
+        }
+        factory = DataProviderFactory(twse_adapter=mock_twse, valuation_service=mock_val_service)
+
+        data = factory.fetch_all_data("2330")
+        self.assertEqual(data["basic_info"]["pb"], 9.76)
+        self.assertEqual(data["basic_info"]["yield"], 0.91)
+        self.assertEqual(data["basic_info"]["pe"], 28.05)
+
+    def test_report_engine_financials_fallback(self):
+        state = StateManager(data_dir=tempfile.mkdtemp())
+        state.save_stock_data("2330", {
+            "ticker": "2330",
+            "basic_info": {"name": "台積電", "pe": 0.0, "pb": 0.0, "yield": 0.0},
+            "financials": {
+                "income_statement": {"net_income": 1000},
+                "balance_sheet": {"total_equity": 5000},
+            },
+        })
+        with patch("src.providers.valuation_service.get_valuation_service") as mock_get_svc:
+            mock_svc = Mock()
+            mock_svc.get_valuation.return_value = {
+                "pe": 28.05, "pb": 9.76, "yield": 0.91, "is_loss": False
+            }
+            mock_get_svc.return_value = mock_svc
+
+            fin = get_financials("2330", state_manager=state)
+            self.assertEqual(fin["pb"], 9.8)
+            self.assertEqual(fin["pe"], 28.1)
+            self.assertEqual(fin["yield"], 0.9)
+            self.assertEqual(fin["roe"], 20.0)
+
+    def test_ai_snapshot_handles_valuation_and_loss(self):
+        temp_dir = tempfile.mkdtemp()
+        state = StateManager(data_dir=temp_dir)
+        # 1. Profitable company with valuation
+        state.save_stock_data("2330", {
+            "ticker": "2330",
+            "price_data_as_of": "2026-10-21",
+            "financial_data_updated_at": "2026-10-21",
+            "basic_info": {"name": "台積電", "pe": 28.05, "pb": 9.76, "yield": 0.91},
+            "financials": {
+                "income_statement": {"net_income": 1000},
+                "balance_sheet": {"total_equity": 5000},
+            },
+            "prices": [{"date": "2026-10-21", "close": 1050}],
+        })
+        snap1 = _stock_snapshot("2330", state)
+        self.assertNotIn("股價淨值比", snap1["missing_data"])
+        self.assertNotIn("本益比", snap1["missing_data"])
+        self.assertNotIn("股利殖利率", snap1["missing_data"])
+
+        # 2. Loss company with PB > 0, PE == 0
+        state.save_stock_data("1101", {
+            "ticker": "1101",
+            "price_data_as_of": "2026-10-21",
+            "financial_data_updated_at": "2026-10-21",
+            "basic_info": {"name": "台泥", "pe": 0.0, "pb": 0.87, "yield": 2.99, "is_loss": True},
+            "financials": {
+                "income_statement": {"net_income": -100},
+                "balance_sheet": {"total_equity": 5000},
+            },
+            "prices": [{"date": "2026-10-21", "close": 26.8}],
+        })
+        snap2 = _stock_snapshot("1101", state)
+        self.assertNotIn("本益比", snap2["missing_data"])
+        self.assertIn("虧損或無本益比狀態", snap2["basic_info"]["pe_note"])
+
+        # 3. Company missing valuation
+        state.save_stock_data("9999", {
+            "ticker": "9999",
+            "price_data_as_of": "2026-10-21",
+            "financial_data_updated_at": "2026-10-21",
+            "basic_info": {"name": "未知", "pe": 0.0, "pb": 0.0, "yield": 0.0},
+            "financials": {
+                "income_statement": {"net_income": 100},
+                "balance_sheet": {"total_equity": 5000},
+            },
+            "prices": [{"date": "2026-10-21", "close": 50}],
+        })
+        snap3 = _stock_snapshot("9999", state)
+        self.assertIn("股價淨值比", snap3["missing_data"])
+        self.assertIn("本益比", snap3["missing_data"])
+        self.assertIn("股利殖利率", snap3["missing_data"])
 
 
 if __name__ == "__main__":

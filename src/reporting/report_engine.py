@@ -33,8 +33,8 @@ def get_suggested_price(ticker: str, state_manager: Optional[StateManager] = Non
     except Exception:
         return "N/A"
 
-def get_financials(ticker: str, state_manager: Optional[StateManager] = None) -> Dict[str, float]:
-    """Fetch financial indicators directly from the stock's state."""
+def get_financials(ticker: str, state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
+    """Fetch financial indicators directly from the stock's state, falling back to ValuationService if missing."""
     state = state_manager or StateManager()
     data = state.get_stock_data(ticker)
     basic_info = data.get('basic_info', {})
@@ -47,11 +47,29 @@ def get_financials(ticker: str, state_manager: Optional[StateManager] = None) ->
     equity = float(bs.get('total_equity', 0))
     roe = (net_income / equity * 100.0) if equity > 0 else float(basic_info.get('roe', 0))
 
+    pb = float(basic_info.get('pb', 0) or basic_info.get('price_to_book', 0))
+    pe = float(basic_info.get('pe', 0) or basic_info.get('trailing_pe', 0))
+    dy = float(basic_info.get('yield', 0) or basic_info.get('dividend_yield', 0))
+    is_loss = bool(basic_info.get('is_loss'))
+
+    if pb == 0 and dy == 0:
+        try:
+            from src.providers.valuation_service import get_valuation_service
+            val = get_valuation_service().get_valuation(ticker)
+            if val:
+                pb = val['pb']
+                dy = val['yield']
+                pe = val['pe']
+                is_loss = val.get('is_loss', False)
+        except Exception as exc:
+            logger.debug("Could not fallback valuation in get_financials for %s: %s", ticker, exc)
+
     return {
         "roe": round(roe, 1),
-        "pb": round(float(basic_info.get('pb', 0) or basic_info.get('price_to_book', 0)), 1),
-        "pe": round(float(basic_info.get('pe', 0) or basic_info.get('trailing_pe', 0)), 1),
-        "yield": round(float(basic_info.get('yield', 0) or basic_info.get('dividend_yield', 0)), 1)
+        "pb": round(pb, 1),
+        "pe": round(pe, 1),
+        "yield": round(dy, 1),
+        "is_loss": is_loss or (pb > 0 and pe <= 0),
     }
 
 def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
@@ -101,7 +119,9 @@ def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
             price_range = get_suggested_price(ticker, state_manager=state)
             fin = get_financials(ticker, state_manager=state)
 
-            financials_str = f"ROE: {fin['roe']}% | P/B: {fin['pb']} | P/E: {fin['pe']} | 股利: {fin['yield']}%"
+            pe_val = fin['pe']
+            pe_str = f"{pe_val}" if pe_val > 0 else ("N/A(虧損)" if fin.get('is_loss') or fin['pb'] > 0 else "0.0")
+            financials_str = f"ROE: {fin['roe']}% | P/B: {fin['pb']} | P/E: {pe_str} | 股利: {fin['yield']}%"
             lines.append(f"{i}. {name} ({ticker}) - 得分: {score:.2f} | 區間: {price_range}\n")
             lines.append(f"   📊 財務: <code>{financials_str}</code>\n")
 
