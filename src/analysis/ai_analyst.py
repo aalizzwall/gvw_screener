@@ -13,6 +13,7 @@ from src.config import (
 )
 from src.state.ai_provider import AIProviderPreferenceStore, parse_entry
 from src.state.state_manager import StateManager
+from src.analysis.model_prober import probe_available_models, get_intra_provider_pool
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,9 @@ def _resolve_model(name: str, model: str, local_base_url: Optional[str] = None) 
     if name != "local":
         return model
     if model in ("active", "auto", "default", ""):
+        ok, probed, _ = probe_available_models("local", "", local_base_url=local_base_url)
+        if ok and probed and probed[0] not in ("active", "auto", "default", ""):
+            return probed[0]
         base = (local_base_url or LOCAL_AI_BASE_URL).strip().rstrip("/")
         if base.endswith("/chat/completions"):
             base = base[:-len("/chat/completions")]
@@ -275,23 +279,39 @@ def analyze_stock(
 
     attempted = {}
     last_exc = None
+    # Tier 2: Inter-Provider Fallback Loop
     for name, key, provider_model in candidates:
         label = _PROVIDERS[name]["label"]
-        actual_model = _resolve_model(name, provider_model, local_base_url)
         endpoint = get_endpoint_url(name, local_base_url)
         attempted[label] = None
-        try:
-            return _request_completion(
-                name, key, actual_model, _build_messages(name, user_content), 900, url=endpoint
-            )
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(f"{label}({actual_model})", ticker, key, exc)
-            last_exc = exc
+
+        # Tier 1: Intra-Provider Model Fallback Pool (dynamic probing + ranking)
+        model_pool = get_intra_provider_pool(
+            name, key, local_base_url=local_base_url, preferred_model=provider_model
+        )
+
+        for candidate_model in model_pool:
+            actual_model = _resolve_model(name, candidate_model, local_base_url)
+            try:
+                return _request_completion(
+                    name, key, actual_model, _build_messages(name, user_content), 900, url=endpoint
+                )
+            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+                _log_failure(f"{label}({actual_model})", ticker, key, exc)
+                last_exc = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status == 401:
+                    # Invalid key affects all models in this provider, cascade to next provider (Tier 2)
+                    break
+
     raise RuntimeError(f"{'、'.join(attempted)} 分析請求失敗，請稍後重試。") from last_exc
 
 
 def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Probe each chain entry with a tiny request; used by the owner's /ai_check command."""
+    """
+    Probes available models and tests intra-provider and inter-provider health;
+    used by the owner's /ai_check command.
+    """
     pref_store = AIProviderPreferenceStore()
     local_base_url = pref_store.get_local_base_url() or LOCAL_AI_BASE_URL
     results = []
@@ -308,21 +328,69 @@ def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
             "model": actual_model,
             "ok": False,
             "detail": "",
+            "probed_models": [],
+            "pool": [],
+            "tier1_results": [],
         }
-        if not key:
+        if not key and name != "local":
             result["detail"] = f"未設定 {_PROVIDERS[name]['key_name']}"
             results.append(result)
             continue
-        started = time.perf_counter()
-        try:
-            _request_completion(
-                name, key, actual_model, [{"role": "user", "content": "ping"}], 8, url=endpoint
-            )
+        if name == "local" and not (local_base_url or "").strip():
+            result["detail"] = f"未設定 {_PROVIDERS[name]['key_name']}"
+            results.append(result)
+            continue
+
+        # 1. Dynamic Model Probing
+        probe_ok, probed_models, probe_detail = probe_available_models(
+            name, key, local_base_url=local_base_url, force_refresh=True
+        )
+        result["probe_status"] = probe_detail
+        result["probed_models"] = probed_models
+
+        # 2. Intra-Provider Model Pool (Tier 1)
+        model_pool = get_intra_provider_pool(
+            name, key, local_base_url=local_base_url, preferred_model=model, max_models=3, force_refresh=True
+        )
+        result["pool"] = model_pool
+
+        # 3. Test ping models in pool
+        first_success = None
+        first_error_detail = ""
+        tier1_results = []
+        for cand in model_pool:
+            cand_actual = _resolve_model(name, cand, local_base_url)
+            started = time.perf_counter()
+            try:
+                _request_completion(
+                    name, key, cand_actual, [{"role": "user", "content": "ping"}], 8, url=endpoint
+                )
+                dur_ms = int((time.perf_counter() - started) * 1000)
+                tier1_results.append({"model": cand_actual, "ok": True, "detail": f"{dur_ms}ms"})
+                if not first_success:
+                    first_success = (cand_actual, dur_ms)
+                # Found working model in pool, stop testing further in Tier 1
+                break
+            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+                _log_failure(f"{label}({cand_actual})", "health-check", key, exc)
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                err_detail = f"HTTP {status}" if status else type(exc).__name__
+                tier1_results.append({"model": cand_actual, "ok": False, "detail": err_detail})
+                if not first_error_detail:
+                    first_error_detail = err_detail
+                if status == 401:
+                    # Auth error, no point trying other models with same invalid key
+                    break
+
+        result["tier1_results"] = tier1_results
+        if first_success:
             result["ok"] = True
-            result["detail"] = f"{int((time.perf_counter() - started) * 1000)}ms"
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            _log_failure(f"{label}({actual_model})", "health-check", key, exc)
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            result["detail"] = f"HTTP {status}" if status else type(exc).__name__
+            cand_actual, dur_ms = first_success
+            result["model"] = cand_actual
+            result["detail"] = f"{dur_ms}ms"
+        else:
+            result["ok"] = False
+            result["detail"] = first_error_detail or "檢測失敗"
+
         results.append(result)
     return results

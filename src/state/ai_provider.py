@@ -16,8 +16,26 @@ PROVIDER_ALIASES = {"lmstudio": "local", "lm-studio": "local"}
 # Models the owner may select, per provider. Strongest first. The models configured
 # through OPENAI_MODEL / GEMMA_MODEL / LOCAL_AI_MODEL are always allowed as well.
 _BUILTIN_MODELS: Dict[str, List[str]] = {
-    "openai": ["gpt-4.1", "gpt-4o", "gpt-4.1-mini", "gpt-4o-mini"],
-    "gemma": ["gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"],
+    "openai": [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-3.5-turbo",
+    ],
+    "gemma": [
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-pro",
+        "gemma-2-27b-it",
+        "gemma-2-9b-it",
+        "gemma-2-2b-it",
+        "gemma-3-27b-it",
+        "gemma-3-12b-it",
+        "gemma-3-4b-it",
+    ],
     "local": ["active", "qwen-3.6-9b", "qwen2.5-7b", "llama-3.2-3b"],
 }
 
