@@ -96,6 +96,7 @@ class TestModelProber(unittest.TestCase):
         resp = Mock(status_code=200)
         resp.json.return_value = {
             "data": [
+                {"id": "models/gemini-2.5-computer-use-preview-10-2025"},
                 {"id": "models/antigravity-preview-05-2026"},
                 {"id": "models/antigravity-preview-latest"},
                 {"id": "models/gemini-1.5-flash"},
@@ -108,6 +109,7 @@ class TestModelProber(unittest.TestCase):
 
         ok, models, detail = probe_available_models("gemma", "gm-test", force_refresh=True)
         self.assertTrue(ok)
+        self.assertNotIn("gemini-2.5-computer-use-preview-10-2025", models)
         self.assertNotIn("antigravity-preview-05-2026", models)
         self.assertNotIn("models/antigravity-preview-05-2026", models)
         self.assertNotIn("text-embedding-004", models)

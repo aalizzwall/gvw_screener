@@ -472,6 +472,20 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("gemini-1.5-flash", response_text)
         self.assertIn("新主力", response_text)
 
+    def test_owner_can_select_ai_model_via_callback_query(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+        bot._answer_callback_query = Mock()
+
+        bot.handle_callback_query({
+            "id": "cb-ai-select",
+            "from": {"id": 10},
+            "data": "ai_select:local/deepseek/deepseek-r1-0528-qwen3-8b",
+        })
+
+        self.assertEqual(provider_store.get_chain()[0], "local/deepseek/deepseek-r1-0528-qwen3-8b")
+        bot._answer_callback_query.assert_called_once()
+        self.assertIn("已將主力 AI 模型切換為", bot.send_message.call_args.args[1])
+
     def test_owner_can_view_and_set_local_ai_endpoint(self):
         bot, provider_store = self._owner_bot_with_provider_store()
 

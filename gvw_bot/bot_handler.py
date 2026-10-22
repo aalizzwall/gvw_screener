@@ -19,7 +19,7 @@ from src.config import (
     TELEGRAM_HOME_CHANNEL,
     TELEGRAM_OWNER_USER_ID,
 )
-from src.analysis.ai_analyst import analyze_stock, check_providers
+from src.analysis.ai_analyst import analyze_stock, check_providers, _provider_key
 from src.state.ai_access import AIAnalysisAccessStore
 from src.state.ai_provider import AIProviderPreferenceStore, model_catalog
 from src.reporting.report_engine import generate_daily_report
@@ -311,11 +311,7 @@ class TelegramBotHandler:
             self.send_message(chat_id, self._ai_status_text())
 
         elif cmd == "/ai_models":
-            lines = ["📚 <b>可選的 provider/model</b>"]
-            for provider, models in model_catalog().items():
-                lines.append(f"\n<b>{provider}</b>")
-                lines.extend(f"• <code>{provider}/{model}</code>" for model in models)
-            self.send_message(chat_id, "\n".join(lines))
+            self._render_ai_models(chat_id)
 
         elif cmd in {"/ai_set", "/ai_add", "/ai_remove"}:
             args = text.split()[1:]
@@ -449,6 +445,74 @@ class TelegramBotHandler:
 
         else:
             self.send_message(chat_id, "未知指令，請輸入 /help 查看功能。")
+
+    def _render_ai_models(self, chat_id: Union[int, str]):
+        from src.analysis.model_prober import probe_available_models, _clean_model_id
+        local_url = self.ai_provider_store.get_local_base_url()
+        lines = ["📚 <b>可選的 AI Provider / Model 清單</b>\n"]
+        buttons = []
+
+        catalog = model_catalog()
+
+        # 1. Local LM-Studio models
+        lines.append("🏠 <b>LM-Studio (地端模型)</b>")
+        ok, local_probed, detail = probe_available_models("local", "", local_base_url=local_url)
+        if ok and local_probed:
+            lines.append(f"• 狀態：探測成功（發現 {len(local_probed)} 個模型）")
+            lines.append("• <code>local/active</code>（自動使用當前載入模型，推薦）")
+            buttons.append([{"text": "🏠 切換至 local/active", "callback_data": "ai_select:local/active"}])
+            for m in local_probed:
+                clean_m = _clean_model_id(m)
+                if clean_m not in ("active", ""):
+                    lines.append(f"• <code>local/{clean_m}</code>")
+                    short_name = clean_m.split("/")[-1] if "/" in clean_m else clean_m
+                    if len(buttons) < 7:
+                        buttons.append([{"text": f"🏠 切換至 {short_name[:28]}", "callback_data": f"ai_select:local/{clean_m}"}])
+        else:
+            lines.append(f"• 狀態：{detail}")
+            lines.extend(f"• <code>local/{m}</code>" for m in catalog.get("local", ["active"]))
+
+        # 2. Google Gemma / Gemini models
+        lines.append("\n🌐 <b>Google Gemma / Gemini</b>")
+        gemini_key = _provider_key("gemma")
+        if gemini_key:
+            ok, g_probed, detail = probe_available_models("gemma", gemini_key)
+            if ok and g_probed:
+                lines.append(f"• 狀態：探測成功（發現 {len(g_probed)} 個可用對話模型）")
+                for m in g_probed[:8]:
+                    lines.append(f"• <code>gemma/{m}</code>")
+                    if len(buttons) < 11:
+                        buttons.append([{"text": f"🌐 切換至 gemma/{m}", "callback_data": f"ai_select:gemma/{m}"}])
+            else:
+                lines.append(f"• 狀態：{detail}")
+                lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+        else:
+            lines.append("• 狀態：未設定 GEMINI_API_KEY")
+            lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+
+        # 3. OpenAI models
+        lines.append("\n⚡ <b>OpenAI</b>")
+        oa_key = _provider_key("openai")
+        if oa_key:
+            ok, oa_probed, detail = probe_available_models("openai", oa_key)
+            if ok and oa_probed:
+                lines.append(f"• 狀態：探測成功（發現 {len(oa_probed)} 個模型）")
+                for m in oa_probed[:5]:
+                    lines.append(f"• <code>openai/{m}</code>")
+            else:
+                lines.append(f"• 狀態：{detail}")
+                lines.extend(f"• <code>openai/{m}</code>" for m in catalog.get("openai", [])[:4])
+        else:
+            lines.append("• 狀態：未設定 OPENAI_API_KEY")
+            lines.extend(f"• <code>openai/{m}</code>" for m in catalog.get("openai", [])[:4])
+
+        lines.append("\n💡 <b>切換主力方式：</b>")
+        lines.append("1. 點擊下方按鈕快速切換主力模型")
+        lines.append("2. 或輸入指令：<code>/ai_set &lt;provider/model&gt;</code>")
+        lines.append("例如：<code>/ai_set local/deepseek/deepseek-r1-0528-qwen3-8b</code>")
+
+        reply_markup = {"inline_keyboard": buttons} if buttons else None
+        self.send_message(chat_id, "\n".join(lines), reply_markup=reply_markup)
 
     def _ai_status_text(self) -> str:
         lines = ["🤖 <b>AI provider/model 順序</b>"]
@@ -767,6 +831,22 @@ class TelegramBotHandler:
         data = str(callback.get("data", ""))
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
+            return
+
+        if data.startswith("ai_select:"):
+            entry = data[len("ai_select:"):]
+            try:
+                current_chain = self.ai_provider_store.get_chain()
+                new_chain = [entry] + [e for e in current_chain if e != entry]
+                self.ai_provider_store.set_chain(new_chain)
+                self._answer_callback_query(callback_id, f"已切換主力為 {entry}")
+                self.send_message(
+                    actor_id,
+                    f"✅ <b>已將主力 AI 模型切換為：</b><code>{html.escape(entry)}</code>\n\n"
+                    + self._ai_status_text(),
+                )
+            except Exception as e:
+                self._answer_callback_query(callback_id, f"切換失敗: {e}")
             return
 
         parts = data.split(":")
