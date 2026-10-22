@@ -120,6 +120,7 @@ class TelegramBotHandler:
         self.maintenance_agent = maintenance_agent or MaintenanceAgent(
             ai_provider_store=self.ai_provider_store,
             doctor=self.doctor,
+            scheduler=self.scheduler,
         )
         self.last_update_id = 0
         self.running = False
@@ -394,6 +395,7 @@ class TelegramBotHandler:
         elif cmd == "/maintain":
             if chat_id in self.maintenance_mode_chats:
                 self.maintenance_mode_chats.remove(chat_id)
+                self.maintenance_agent.clear_session(str(chat_id))
                 self.send_message(
                     chat_id,
                     "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
@@ -403,21 +405,30 @@ class TelegramBotHandler:
                 self.send_message(
                     chat_id,
                     "🛠️ <b>已進入【系統維護模式】</b>\n\n"
+                    "維護 Agent 導入 Pi 極簡架構，支援多輪對話記憶與系統自我診斷。\n"
                     "在此模式下，您可以直接傳送任何自然語言問題，例如：\n"
                     "• <i>為什麼 PB PE 股利 是空白的？</i>\n"
-                    "• <i>幫我看 2330 目前資料庫的狀態</i>\n"
-                    "• <i>檢查最近 TWSE 採集日誌是否有錯誤？</i>\n\n"
-                    "維護 Agent 會自己調用診斷工具、查閱資料庫與日誌並為您推理分析。\n"
-                    "輸入 <code>/maintain</code> 或 <code>/exit</code> 可隨時退出此模式。",
+                    "• <i>那 2330 呢？幫我看目前資料庫中的狀態</i>\n"
+                    "• <i>檢查最近排程執行狀況與是否有異常日誌？</i>\n\n"
+                    "👉 常用指令：\n"
+                    "• <code>reset</code> 或 <code>/reset</code>：清除對話記憶\n"
+                    "• <code>exit</code> 或 <code>/maintain</code>：隨時退出此模式",
                 )
 
         elif chat_id in self.maintenance_mode_chats:
             user_msg = text.strip()
             if user_msg.lower() in ["/exit", "exit", "退出", "離開"]:
                 self.maintenance_mode_chats.remove(chat_id)
+                self.maintenance_agent.clear_session(str(chat_id))
                 self.send_message(
                     chat_id,
                     "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
+                )
+            elif user_msg.lower() in ["/reset", "reset", "/clear", "clear", "重置", "清除"]:
+                self.maintenance_agent.clear_session(str(chat_id))
+                self.send_message(
+                    chat_id,
+                    "🔄 <b>已重置維護對話記憶</b>，您可以開始新的問題排查。",
                 )
             else:
                 self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
@@ -649,7 +660,7 @@ class TelegramBotHandler:
 
     def _handle_maintenance_query(self, chat_id: Union[int, str], question: str):
         try:
-            answer = self.maintenance_agent.ask(question)
+            answer = self.maintenance_agent.ask(question, session_id=str(chat_id))
             self.send_message(chat_id, f"🛠️ <b>【維護診斷報告】</b>\n\n{answer}")
         except Exception as e:
             logger.error(f"Maintenance agent query error: {e}", exc_info=True)

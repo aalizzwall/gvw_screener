@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.agent.maintenance_agent import MaintenanceAgent
+from src.agent.tool_registry import ToolRegistry, Tool
+from src.agent.session_context import SessionContext
 from src.providers.twse_adapter import TWSEAdapter
 from gvw_bot.bot_handler import TelegramBotHandler
 from src.state.state_manager import StateManager
@@ -92,6 +94,84 @@ class TestMaintenanceAgent(unittest.TestCase):
             ans = self.agent.ask("為什麼 2330 沒資料？")
             self.assertIn("2330 的資料庫記錄存在", ans)
 
+    def test_ask_multi_turn_session_continuity(self):
+        # Turn 1
+        resp1 = json.dumps({"action": "final_answer", "answer": "台積電 2330 狀態正常。"})
+        # Turn 2 (LLM receives previous session history)
+        resp2 = json.dumps({"action": "final_answer", "answer": "聯發科 2454 狀態也已查詢。"})
+        with patch.object(self.agent, "_call_llm", side_effect=[resp1, resp2]) as mock_call:
+            ans1 = self.agent.ask("台積電狀況？", session_id="chat-1")
+            self.assertIn("2330 狀態正常", ans1)
+
+            ans2 = self.agent.ask("那聯發科呢？", session_id="chat-1")
+            self.assertIn("2454", ans2)
+
+            # Check that the second call's messages contained the first question
+            second_call_messages = mock_call.call_args_list[1][0][0]
+            contents = [m["content"] for m in second_call_messages]
+            self.assertTrue(any("台積電狀況？" in c for c in contents))
+
+        # Clear session
+        self.agent.clear_session("chat-1")
+        session = self.agent.get_or_create_session("chat-1")
+        self.assertEqual(len(session.history), 0)
+
+    def test_tool_inspect_scheduler_jobs(self):
+        mock_job = Mock()
+        mock_job.name = "test_intraday_job"
+        mock_job.interval_minutes = 15
+        mock_job.daily_time = None
+        mock_job.weekdays_only = True
+        mock_job.is_running = False
+        mock_job.last_run = None
+
+        mock_scheduler = Mock()
+        mock_scheduler.jobs = [mock_job]
+
+        agent_with_sched = MaintenanceAgent(
+            state_manager=self.state,
+            ai_provider_store=self.ai_store,
+            scheduler=mock_scheduler,
+            logs_dir=self.logs_dir,
+            data_dir=self.data_dir,
+        )
+        res = agent_with_sched.tool_inspect_scheduler_jobs()
+        self.assertTrue(res["available"])
+        self.assertEqual(res["job_count"], 1)
+        self.assertEqual(res["jobs"][0]["name"], "test_intraday_job")
+
+    def test_tool_inspect_ai_config(self):
+        res = self.agent.tool_inspect_ai_config()
+        self.assertIn("provider_chain", res)
+        self.assertIn("primary_provider", res)
+
+    def test_tool_registry_registration_and_execution(self):
+        registry = ToolRegistry()
+
+        @registry.register(name="add", description="加法運算")
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        self.assertIsNotNone(registry.get("add"))
+        self.assertEqual(registry.execute("add", {"a": 2, "b": 3}), 5)
+
+        # Non-existent tool
+        err = registry.execute("subtract", {"a": 5, "b": 2})
+        self.assertEqual(err["status"], "error")
+        self.assertIn("未知工具名稱", err["error"])
+
+    def test_session_context_compaction(self):
+        session = SessionContext(session_id="test", max_turns=2, max_chars=100)
+        session.add_user_message("msg 1")
+        session.add_assistant_message("reply 1")
+        session.add_user_message("msg 2")
+        session.add_assistant_message("reply 2")
+        session.add_user_message("msg 3")
+        session.add_assistant_message("reply 3")
+
+        # Must have compacted to max_turns
+        self.assertLessEqual(session.turn_count, 2)
+
 
 class TestTWSEValuationData(unittest.TestCase):
     def test_twse_adapter_fetches_pe_pb_yield(self):
@@ -156,7 +236,7 @@ class TestTelegramBotMaintenanceMode(unittest.TestCase):
             # Wait briefly for daemon thread
             time.sleep(0.1)
 
-            mock_ask.assert_called_once_with("為什麼 PB PE 是空白的？")
+            mock_ask.assert_called_once_with("為什麼 PB PE 是空白的？", session_id="10")
             calls = [c.args[1] for c in self.bot.send_message.call_args_list]
             self.assertTrue(any("分析您的問題" in c for c in calls))
             self.assertTrue(any("經診斷，系統正常。" in c for c in calls))
@@ -167,6 +247,15 @@ class TestTelegramBotMaintenanceMode(unittest.TestCase):
         self.assertNotIn(10, self.bot.maintenance_mode_chats)
         calls = [c.args[1] for c in self.bot.send_message.call_args_list]
         self.assertTrue(any("已退出【系統維護模式】" in c for c in calls))
+
+    def test_maintenance_mode_reset_keyword(self):
+        self.bot.maintenance_mode_chats.add(10)
+        with patch.object(self.bot.maintenance_agent, "clear_session") as mock_clear:
+            self.bot.handle_command(10, "reset", "reset", user_id=10)
+            self.assertIn(10, self.bot.maintenance_mode_chats)
+            mock_clear.assert_called_once_with("10")
+            calls = [c.args[1] for c in self.bot.send_message.call_args_list]
+            self.assertTrue(any("已重置維護對話記憶" in c for c in calls))
 
 
 if __name__ == "__main__":
