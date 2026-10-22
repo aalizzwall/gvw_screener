@@ -72,13 +72,40 @@ def _stock_snapshot(ticker: str, state: StateManager) -> Dict[str, Any]:
         missing_data.append("資產負債資料")
     if not stock.get("financial_data_updated_at"):
         missing_data.append("財務資料更新日期")
-    for key, label in (
-        ("pe", "本益比"),
-        ("pb", "股價淨值比"),
-        ("yield", "股利殖利率"),
-    ):
-        if basic_info.get(key) in (None, "", 0, 0.0, "0", "0.0"):
-            missing_data.append(label)
+
+    # If basic_info lacks pb/yield, fallback to live valuation service
+    pb_val = float(basic_info.get("pb", 0) or basic_info.get("price_to_book", 0) or 0)
+    dy_val = float(basic_info.get("yield", 0) or basic_info.get("dividend_yield", 0) or 0)
+    pe_val = float(basic_info.get("pe", 0) or basic_info.get("trailing_pe", 0) or 0)
+    is_loss = bool(basic_info.get("is_loss"))
+
+    if pb_val == 0 and dy_val == 0:
+        try:
+            from src.providers.valuation_service import get_valuation_service
+            val = get_valuation_service().get_valuation(ticker)
+            if val:
+                basic_info["pb"] = val["pb"]
+                basic_info["yield"] = val["yield"]
+                basic_info["pe"] = val["pe"]
+                basic_info["is_loss"] = val["is_loss"]
+                pb_val = val["pb"]
+                dy_val = val["yield"]
+                pe_val = val["pe"]
+                is_loss = val["is_loss"]
+        except Exception as exc:
+            logger.debug("Valuation fallback failed in snapshot for %s: %s", ticker, exc)
+
+    if pb_val <= 0:
+        missing_data.append("股價淨值比 (P/B)")
+    if dy_val <= 0 and pb_val <= 0:
+        missing_data.append("股利殖利率")
+    elif dy_val <= 0:
+        basic_info["dividend_note"] = "近期未配發股利或殖利率為 0%"
+    if pe_val <= 0:
+        if pb_val > 0 or is_loss:
+            basic_info["pe_note"] = "公司處於虧損或無本益比狀態 (EPS <= 0)"
+        else:
+            missing_data.append("本益比 (P/E)")
 
     return {
         "ticker": ticker,

@@ -30,6 +30,7 @@ from src.diagnostics.doctor import GVWDoctor
 from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
 from src.agent.maintenance_agent import MaintenanceAgent
 from src.state.alert_subscribers import AlertSubscriptionStore
+from src.state.state_manager import StateManager
 
 logger = logging.getLogger("gvw.bot")
 
@@ -882,8 +883,26 @@ class TelegramBotHandler:
         response.raise_for_status()
 
     def _send_stock_analysis(self, chat_id: Union[int, str], ticker: str):
-        self.send_message(chat_id, f"⏳ 正在根據本機已採集資料分析 {ticker}，請稍候...")
+        self.send_message(chat_id, f"⏳ 正在準備資料並分析 {ticker}，請稍候...")
         try:
+            state = StateManager()
+            stock_data = state.get_stock_data(ticker)
+            need_refresh = False
+            if not stock_data or not stock_data.get("prices"):
+                need_refresh = True
+            else:
+                basic = stock_data.get("basic_info", {})
+                if not isinstance(basic, dict) or (float(basic.get("pb", 0) or 0) == 0 and float(basic.get("yield", 0) or 0) == 0):
+                    need_refresh = True
+
+            if need_refresh:
+                try:
+                    from src.core.orchestrator import Orchestrator
+                    orchestrator = Orchestrator(state_manager=state)
+                    orchestrator.update_stock(ticker, force=True)
+                except Exception as exc:
+                    logger.warning("Auto-refresh before AI analysis failed for %s: %s", ticker, exc)
+
             report = analyze_stock(ticker)
         except (RuntimeError, ValueError) as exc:
             self.send_message(chat_id, str(exc))

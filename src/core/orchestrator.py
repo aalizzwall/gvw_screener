@@ -166,6 +166,16 @@ class Orchestrator:
         if prices_updated:
             existing_data['ticker'] = ticker
             self._apply_price_history(existing_data, prices)
+            get_val_fn = getattr(self.factory, "get_valuation", None)
+            val = get_val_fn(ticker) if callable(get_val_fn) else None
+            if val:
+                existing_basic = existing_data.setdefault('basic_info', {})
+                if isinstance(existing_basic, dict):
+                    existing_basic['pb'] = val['pb']
+                    existing_basic['yield'] = val['yield']
+                    existing_basic['pe'] = val['pe']
+                    if val.get('is_loss'):
+                        existing_basic['is_loss'] = True
 
         existing_data["last_refresh_attempt_at"] = now
         existing_data["last_refresh_status"] = (

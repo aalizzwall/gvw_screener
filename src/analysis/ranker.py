@@ -205,6 +205,21 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
                 if pd.notna(latest_price_date):
                     price_data_as_of = latest_price_date.strftime('%Y-%m-%d')
 
+            b_info = data.get('basic_info', {})
+            pb_val = float(b_info.get('pb', 0) or 0)
+            yield_val = float(b_info.get('yield', 0) or 0)
+            pe_val = float(b_info.get('pe', 0) or 0)
+            if pb_val == 0 and yield_val == 0:
+                try:
+                    from src.providers.valuation_service import get_valuation_service
+                    val = get_valuation_service().get_valuation(ticker)
+                    if val:
+                        pb_val = val['pb']
+                        yield_val = val['yield']
+                        pe_val = val['pe']
+                except Exception:
+                    pass
+
             all_stocks.append({
                 'ticker': ticker,
                 'name': name,
@@ -219,10 +234,10 @@ def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
                     'price_data_source',
                     df_prices.iloc[-1].get('source', 'unknown'),
                 ),
-                'roe': data.get('basic_info', {}).get('roe', 0),
-                'pb': data.get('basic_info', {}).get('pb', 0),
-                'pe': data.get('basic_info', {}).get('pe', 0),
-                'yield': data.get('basic_info', {}).get('yield', 0)
+                'roe': b_info.get('roe', 0),
+                'pb': pb_val,
+                'pe': pe_val,
+                'yield': yield_val
             })
 
             if idx % 100 == 0 or idx == len(stock_files):
