@@ -737,5 +737,46 @@ class TestBotAndScheduler(unittest.TestCase):
             sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}
             self.assertEqual(sub_targets, {"100", "200"})
 
+    def test_plain_ticker_triggers_stock_lookup_for_regular_user(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        bot.handle_command(123, "2330", "2330", user_id=123, chat_type="private")
+
+        calls = [c.args[1] for c in bot.send_message.call_args_list]
+        self.assertTrue(any("正在查詢 2330" in c for c in calls))
+        self.assertTrue(any("個股行情與財務估值" in c for c in calls))
+
+    def test_regular_user_can_use_callback_query_to_request_ai(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot._answer_callback_query = Mock()
+        bot.send_message = Mock()
+
+        bot.handle_callback_query({
+            "id": "cb-ai-req",
+            "from": {"id": 123, "first_name": "Alice"},
+            "message": {"chat": {"id": 123}},
+            "data": "ai_request_access:123",
+        })
+
+        bot._answer_callback_query.assert_called_once_with("cb-ai-req", "已送出 AI 申請")
+
+    def test_daily_report_broadcasts_to_subscribers_when_available(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            store.subscribe("100")
+            store.subscribe("200")
+
+            scheduler = GVWScheduler(heartbeat_mgr=self.hb, alert_store=store)
+            with (
+                patch("gvw_bot.scheduler.generate_daily_report", return_value="Daily Report Text"),
+                patch("gvw_bot.scheduler.send_telegram_message", return_value=True) as mock_send,
+            ):
+                scheduler.job_daily_report()
+
+            calls = mock_send.call_args_list
+            sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}
+            self.assertEqual(sub_targets, {"100", "200"})
+
 if __name__ == "__main__":
     unittest.main()
