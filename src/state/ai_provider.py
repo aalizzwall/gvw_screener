@@ -49,6 +49,16 @@ def model_catalog() -> Dict[str, List[str]]:
     ):
         if configured and configured not in catalog[name]:
             catalog[name].append(configured)
+    try:
+        from src.analysis.model_prober import _PROBE_CACHE
+        for key, (_, ok, models, _) in _PROBE_CACHE.items():
+            prov = key.split(":", 1)[0]
+            if ok and prov in catalog:
+                for m in models:
+                    if m not in catalog[prov]:
+                        catalog[prov].append(m)
+    except Exception:
+        pass
     return catalog
 
 

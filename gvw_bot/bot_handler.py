@@ -522,6 +522,11 @@ class TelegramBotHandler:
             unhealthy = [r["entry"] for r in results if not r["ok"]]
             self.ai_provider_store.set_chain(healthy + unhealthy)
             lines.append(f"\n🔀 主力不可用，已將可用者排前面，新主力：<code>{html.escape(healthy[0])}</code>")
+        else:
+            current_chain = self.ai_provider_store.get_chain()
+            new_chain = [r["entry"] for r in results]
+            if new_chain != current_chain:
+                self.ai_provider_store.set_chain(new_chain)
         return "\n".join(lines)
 
     def _execute_system_update(self, chat_id: Union[int, str]):

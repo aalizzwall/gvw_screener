@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from src.analysis.ai_analyst import analyze_stock, check_providers
+from src.analysis.ai_analyst import analyze_stock, check_providers, _request_completion
 from src.analysis.model_prober import _PROBE_CACHE
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.state.state_manager import StateManager
@@ -394,6 +394,25 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertEqual(report, "修正模型成功")
         post.assert_called_once()
         self.assertEqual(post.call_args.kwargs["json"]["model"], "gemini-1.5-flash")
+
+    def test_request_completion_supports_reasoning_models_like_deepseek(self):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "<think>\nThinking...\n</think>\n分析：建議回調觀察",
+                    }
+                }
+            ]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=resp):
+            text = _request_completion(
+                "local", "", "deepseek-r1", [{"role": "user", "content": "ping"}], 32
+            )
+        self.assertIn("分析：建議回調觀察", text)
 
 
 class TestAIProviderPreferenceStore(unittest.TestCase):

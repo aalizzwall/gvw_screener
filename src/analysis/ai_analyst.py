@@ -207,10 +207,24 @@ def _request_completion(
         timeout=timeout,
     )
     response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-    if not isinstance(content, str) or not content.strip():
+    choices = response.json().get("choices", [])
+    if not choices or not isinstance(choices, list):
+        raise ValueError(f"{label} 未回傳任何 choices")
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+
+    text = ""
+    if isinstance(content, str) and content.strip():
+        text = content.strip()
+    elif isinstance(reasoning, str) and reasoning.strip():
+        text = reasoning.strip()
+    elif "text" in choices[0] and isinstance(choices[0]["text"], str) and choices[0]["text"].strip():
+        text = choices[0]["text"].strip()
+
+    if not text:
         raise ValueError(f"{label} 回傳空白分析結果")
-    return content.strip()
+    return text
 
 
 def _log_failure(label: str, ticker: str, key: str, exc: Exception) -> None:
@@ -363,7 +377,7 @@ def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
             started = time.perf_counter()
             try:
                 _request_completion(
-                    name, key, cand_actual, [{"role": "user", "content": "ping"}], 8, url=endpoint
+                    name, key, cand_actual, [{"role": "user", "content": "ping"}], 32, url=endpoint
                 )
                 dur_ms = int((time.perf_counter() - started) * 1000)
                 tier1_results.append({"model": cand_actual, "ok": True, "detail": f"{dur_ms}ms"})
@@ -388,6 +402,8 @@ def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
             cand_actual, dur_ms = first_success
             result["model"] = cand_actual
             result["detail"] = f"{dur_ms}ms"
+            if name != "local":
+                result["entry"] = f"{name}/{cand_actual}"
         else:
             result["ok"] = False
             result["detail"] = first_error_detail or "檢測失敗"

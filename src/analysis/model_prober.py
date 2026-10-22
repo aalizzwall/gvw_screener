@@ -36,10 +36,26 @@ _MODEL_PREFERENCES: Dict[str, List[str]] = {
     ],
 }
 
+def _clean_model_id(model_id: str) -> str:
+    m = str(model_id).strip()
+    if m.startswith("models/"):
+        m = m[len("models/"):]
+    return m
+
+
 _EXCLUDED_PATTERNS = {
-    "openai": ("embedding", "audio", "realtime", "tts", "whisper", "dall-e", "moderation", "search"),
-    "gemma": ("embedding", "aqa", "vision-preview"),
-    "local": ("embedding",),
+    "openai": (
+        "embedding", "audio", "realtime", "tts", "whisper",
+        "dall-e", "moderation", "search", "transcription",
+        "preview-realtime",
+    ),
+    "gemma": (
+        "embedding", "aqa", "vision-preview", "imagen", "veo",
+        "learnlm", "image", "tts", "whisper", "bimodal",
+    ),
+    "local": (
+        "embedding", "bge-", "rerank",
+    ),
 }
 
 
@@ -48,17 +64,37 @@ def _filter_and_rank_models(provider: str, discovered_ids: List[str]) -> List[st
     exclusions = _EXCLUDED_PATTERNS.get(provider, ())
     valid_ids = set()
     for mid in discovered_ids:
-        mid_clean = mid.strip()
+        mid_clean = _clean_model_id(mid)
         if not mid_clean or any(ex in mid_clean.lower() for ex in exclusions):
             continue
+
+        if provider == "gemma":
+            # ONLY keep conversational models: must start with gemini- or gemma-
+            # Google endpoint returns many experimental/preview/system models like antigravity-preview
+            if not (mid_clean.startswith("gemini-") or mid_clean.startswith("gemma-")):
+                continue
+            if "antigravity" in mid_clean.lower():
+                continue
+
+        if provider == "openai":
+            # OpenAI conversational models must start with gpt-, o1, o3, chatgpt-
+            if not (
+                mid_clean.startswith("gpt-")
+                or mid_clean.startswith("o1")
+                or mid_clean.startswith("o3")
+                or mid_clean.startswith("chatgpt-")
+            ):
+                continue
+
         valid_ids.add(mid_clean)
 
     ranked: List[str] = []
     # 1. Add known high-priority models in preference order if present in discovered IDs
     priorities = _MODEL_PREFERENCES.get(provider, [])
     for p in priorities:
-        if p in valid_ids and p not in ranked:
-            ranked.append(p)
+        p_clean = _clean_model_id(p)
+        if p_clean in valid_ids and p_clean not in ranked:
+            ranked.append(p_clean)
 
     # 2. Add remaining valid discovered models
     for m in sorted(valid_ids):
@@ -100,7 +136,11 @@ def probe_available_models(
                 return res
             resp.raise_for_status()
             data = resp.json().get("data", [])
-            discovered = [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+            discovered = [
+                _clean_model_id(m["id"])
+                for m in data
+                if isinstance(m, dict) and "id" in m
+            ]
 
         elif provider == "gemma":
             # Attempt 1: Google OpenAI-compatible models endpoint
@@ -109,7 +149,11 @@ def probe_available_models(
             resp = requests.get(url, headers=headers, timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
-                discovered = [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+                discovered = [
+                    _clean_model_id(m["id"])
+                    for m in data
+                    if isinstance(m, dict) and "id" in m
+                ]
             else:
                 # Attempt 2: Google native models endpoint
                 native_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
@@ -122,7 +166,7 @@ def probe_available_models(
                 models_list = resp2.json().get("models", [])
                 for m in models_list:
                     if isinstance(m, dict) and "name" in m:
-                        name = m["name"].replace("models/", "")
+                        name = _clean_model_id(m["name"])
                         discovered.append(name)
 
         elif provider == "local":
@@ -135,7 +179,11 @@ def probe_available_models(
             resp = requests.get(models_url, timeout=timeout)
             resp.raise_for_status()
             data = resp.json().get("data", [])
-            discovered = [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+            discovered = [
+                _clean_model_id(m["id"])
+                for m in data
+                if isinstance(m, dict) and "id" in m
+            ]
             if not discovered:
                 discovered = ["active"]
 
@@ -176,7 +224,7 @@ def get_intra_provider_pool(
         provider, key, local_base_url=local_base_url, force_refresh=force_refresh
     )
 
-    clean_pref = (preferred_model or "").strip()
+    clean_pref = _clean_model_id(preferred_model or "")
     pool: List[str] = []
 
     if probe_ok and probed:

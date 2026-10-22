@@ -81,8 +81,8 @@ class TestModelProber(unittest.TestCase):
         resp = Mock(status_code=200)
         resp.json.return_value = {
             "data": [
-                {"id": "gemini-1.5-flash"},
-                {"id": "gemini-1.5-pro"},
+                {"id": "models/gemini-1.5-flash"},
+                {"id": "models/gemini-1.5-pro"},
             ]
         }
         mock_get.return_value = resp
@@ -90,6 +90,28 @@ class TestModelProber(unittest.TestCase):
         ok, models, detail = probe_available_models("gemma", "gm-test", force_refresh=True)
         self.assertTrue(ok)
         self.assertEqual(models, ["gemini-1.5-flash", "gemini-1.5-pro"])
+
+    @patch("src.analysis.model_prober.requests.get")
+    def test_probe_gemma_filters_out_antigravity_preview_and_strips_models_prefix(self, mock_get):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {
+            "data": [
+                {"id": "models/antigravity-preview-05-2026"},
+                {"id": "models/antigravity-preview-latest"},
+                {"id": "models/gemini-1.5-flash"},
+                {"id": "models/gemini-2.0-flash"},
+                {"id": "models/gemini-1.5-pro"},
+                {"id": "models/text-embedding-004"},
+            ]
+        }
+        mock_get.return_value = resp
+
+        ok, models, detail = probe_available_models("gemma", "gm-test", force_refresh=True)
+        self.assertTrue(ok)
+        self.assertNotIn("antigravity-preview-05-2026", models)
+        self.assertNotIn("models/antigravity-preview-05-2026", models)
+        self.assertNotIn("text-embedding-004", models)
+        self.assertEqual(models, ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"])
 
     @patch("src.analysis.model_prober.requests.get")
     def test_probe_gemma_fallback_to_native_endpoint(self, mock_get):
