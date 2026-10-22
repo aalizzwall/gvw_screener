@@ -414,6 +414,30 @@ class TestAIAnalyst(unittest.TestCase):
             )
         self.assertIn("分析：建議回調觀察", text)
 
+    @patch("src.analysis.ai_analyst.requests.post")
+    def test_request_completion_falls_back_to_gemini_native_when_openai_proxy_returns_404(
+        self, mock_post
+    ):
+        proxy_resp = Mock(status_code=404)
+        native_resp = Mock(status_code=200)
+        native_resp.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Gemini 原生 API 分析完成"}]
+                    }
+                }
+            ]
+        }
+        mock_post.side_effect = [proxy_resp, native_resp]
+
+        text = _request_completion(
+            "gemma", "gm-key", "gemini-2.5-flash", [{"role": "user", "content": "ping"}], 32
+        )
+        self.assertEqual(text, "Gemini 原生 API 分析完成")
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn("models/gemini-2.5-flash:generateContent", mock_post.call_args_list[1].args[0])
+
 
 class TestAIProviderPreferenceStore(unittest.TestCase):
 

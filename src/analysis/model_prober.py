@@ -22,12 +22,18 @@ _MODEL_PREFERENCES: Dict[str, List[str]] = {
     "gemma": [
         "gemini-1.5-flash",
         "gemini-2.0-flash",
-        "gemini-2.0-flash-exp",
+        "gemini-2.5-flash",
         "gemini-1.5-pro",
+        "gemini-2.0-pro",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-exp",
         "gemma-2-27b-it",
         "gemma-2-9b-it",
         "gemma-2-2b-it",
         "gemma-3-27b-it",
+        "gemma-3-12b-it",
+        "gemma-3-4b-it",
     ],
     "local": [
         "qwen-3.6-9b",
@@ -52,6 +58,7 @@ _EXCLUDED_PATTERNS = {
     "gemma": (
         "embedding", "aqa", "vision-preview", "imagen", "veo",
         "learnlm", "image", "tts", "whisper", "bimodal",
+        "computer-use", "robotics",
     ),
     "local": (
         "embedding", "bge-", "rerank",
@@ -96,10 +103,11 @@ def _filter_and_rank_models(provider: str, discovered_ids: List[str]) -> List[st
         if p_clean in valid_ids and p_clean not in ranked:
             ranked.append(p_clean)
 
-    # 2. Add remaining valid discovered models
-    for m in sorted(valid_ids):
-        if m not in ranked:
-            ranked.append(m)
+    # 2. Add remaining valid discovered models (prioritize non-preview over preview)
+    non_preview = [m for m in sorted(valid_ids) if "preview" not in m.lower() and m not in ranked]
+    preview = [m for m in sorted(valid_ids) if "preview" in m.lower() and m not in ranked]
+    for m in non_preview + preview:
+        ranked.append(m)
 
     return ranked
 

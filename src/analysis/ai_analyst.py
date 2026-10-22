@@ -184,6 +184,52 @@ def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
     return [{"role": "user", "content": f"{ANALYSIS_INSTRUCTIONS}\n\n資料快照 (JSON)：\n{user_content}"}]
 
 
+def _request_gemini_native(
+    key: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int,
+    timeout: int = 45,
+) -> str:
+    clean_model = model.replace("models/", "")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={key}"
+
+    contents = []
+    system_instruction = None
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            system_instruction = {"parts": [{"text": content}]}
+        else:
+            role_name = "model" if role == "assistant" else "user"
+            contents.append({"role": role_name, "parts": [{"text": content}]})
+
+    if not contents:
+        contents = [{"role": "user", "parts": [{"text": "ping"}]}]
+
+    payload: Dict[str, Any] = {
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.2,
+        },
+    }
+    if system_instruction:
+        payload["systemInstruction"] = system_instruction
+
+    resp = requests.post(url, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError("Google Gemini Native API 未回傳任何 candidates")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    if not parts or "text" not in parts[0]:
+        raise ValueError("Google Gemini Native API 回傳空白結果")
+    return parts[0]["text"].strip()
+
+
 def _request_completion(
     name: str,
     key: str,
@@ -206,6 +252,9 @@ def _request_completion(
         },
         timeout=timeout,
     )
+    if response.status_code == 404 and name == "gemma":
+        logger.info("Google OpenAI proxy returned 404 for %s, falling back to Gemini Native API", model)
+        return _request_gemini_native(key, model, messages, max_tokens, timeout=timeout)
     response.raise_for_status()
     choices = response.json().get("choices", [])
     if not choices or not isinstance(choices, list):
@@ -364,7 +413,7 @@ def check_providers(chain: Optional[List[str]] = None) -> List[Dict[str, Any]]:
 
         # 2. Intra-Provider Model Pool (Tier 1)
         model_pool = get_intra_provider_pool(
-            name, key, local_base_url=local_base_url, preferred_model=model, max_models=3, force_refresh=True
+            name, key, local_base_url=local_base_url, preferred_model=model, max_models=5, force_refresh=True
         )
         result["pool"] = model_pool
 
