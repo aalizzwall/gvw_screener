@@ -18,6 +18,7 @@ from src.analysis.intraday import run_intraday_monitoring
 from src.reporting.report_engine import generate_daily_report
 from src.reporting.telegram_notifier import send_telegram_message
 from src.state.alert_subscribers import AlertSubscriptionStore
+from src.config import TELEGRAM_HOME_CHANNEL
 from gvw_bot.heartbeat import HeartbeatManager
 
 logger = logging.getLogger("gvw.scheduler")
@@ -176,14 +177,26 @@ class GVWScheduler:
     def job_daily_report(self):
         logger.info("[JOB] Generating and sending Post-Market Daily Report...")
         report_text = generate_daily_report()
-        sent = send_telegram_message(report_text)
+        sent = False
+        if TELEGRAM_HOME_CHANNEL:
+            if send_telegram_message(report_text, chat_id=TELEGRAM_HOME_CHANNEL):
+                sent = True
+        for chat_id in self.alert_store.get_subscribers():
+            if send_telegram_message(report_text, chat_id=chat_id):
+                sent = True
         self.hb.update_job_status("daily_report", "ok" if sent else "warning", message="Sent to Telegram" if sent else "Failed/Not configured")
 
     def job_morning_briefing(self):
         logger.info("[JOB] Generating Pre-Market Morning Briefing...")
         report_text = generate_daily_report()
         briefing = "🌅 <b>【GVW 晨間選股速報】</b>\n" + report_text
-        sent = send_telegram_message(briefing)
+        sent = False
+        if TELEGRAM_HOME_CHANNEL:
+            if send_telegram_message(briefing, chat_id=TELEGRAM_HOME_CHANNEL):
+                sent = True
+        for chat_id in self.alert_store.get_subscribers():
+            if send_telegram_message(briefing, chat_id=chat_id):
+                sent = True
         self.hb.update_job_status("morning_briefing", "ok" if sent else "warning")
 
     def job_periodic_sync(self):

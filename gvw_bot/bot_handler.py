@@ -22,7 +22,7 @@ from src.config import (
 from src.analysis.ai_analyst import analyze_stock, check_providers, _provider_key
 from src.state.ai_access import AIAnalysisAccessStore
 from src.state.ai_provider import AIProviderPreferenceStore, model_catalog
-from src.reporting.report_engine import generate_daily_report
+from src.reporting.report_engine import generate_daily_report, get_financials, get_suggested_price
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
 from src.analysis.intraday import run_intraday_monitoring
@@ -57,6 +57,16 @@ BOT_COMMANDS = [
     {"command": "fix", "description": "自主修復指定 Issue，例如 /fix #28"},
     {"command": "maintain", "description": "切換系統維護模式，可直接用自然語言診斷資料與除錯"},
 ]
+
+PUBLIC_COMMANDS = [
+    {"command": "start", "description": "開始使用 / 叫出功能按鈕"},
+    {"command": "report", "description": "查看最新 GVW 選股日報與 Top 10"},
+    {"command": "top10", "description": "查看目前全市場評分 Top 10 標的"},
+    {"command": "toggle_monitor", "description": "開啟或關閉盤中即時突破通知"},
+    {"command": "analyze", "description": "個股深度 AI 評估（需申請）"},
+    {"command": "help", "description": "查看使用指南與指令說明"},
+]
+
 MENU_BUTTONS = {
     "🏆 Top 10 選股": "/report",
     "📊 選股報告 / Top 10": "/report",
@@ -300,6 +310,13 @@ class TelegramBotHandler:
                 return
             self._send_stock_analysis(chat_id, parts[1].strip())
 
+        elif cmd in {"/query", "/stock"}:
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip().isdigit():
+                self.send_message(chat_id, "請輸入要查找的台股代碼，例如：<code>/query 2330</code>", user_id=user_id)
+                return
+            self._send_stock_lookup(chat_id, parts[1].strip(), user_id=user_id)
+
         elif cmd == "/ai_requests":
             requests_list = self.ai_access_store.pending_requests()
             if not requests_list:
@@ -444,8 +461,22 @@ class TelegramBotHandler:
             self.pending_analysis_chats.pop(chat_id, None)
             self._send_stock_analysis(chat_id, ticker)
 
+        elif text.strip().isdigit() and 4 <= len(text.strip()) <= 6:
+            ticker = text.strip()
+            self._send_stock_lookup(chat_id, ticker, user_id=user_id)
+
         else:
-            self.send_message(chat_id, "未知指令，請輸入 /help 查看功能。")
+            self.send_message(
+                chat_id,
+                "👋 <b>您好！歡迎使用 GVW Screener 智能選股機器人</b>\n\n"
+                "• 請直接輸入 <b>4 至 6 位數台股代碼</b>（例如 <code>2330</code>）查找最新行情、估值與建議買入區間。\n"
+                "• 點擊下方功能按鈕：\n"
+                "  - 🏆 <b>Top 10 選股</b>：查看最新核心優質標的\n"
+                "  - 🔔 <b>盤中監控</b>：開啟/關閉即時突破通知\n"
+                "  - 🤖 <b>AI 個股分析</b>：深度多空 AI 評估\n\n"
+                "輸入 /help 可查看完整指令說明。",
+                user_id=user_id,
+            )
 
     def _render_ai_models(self, chat_id: Union[int, str]):
         from src.analysis.model_prober import probe_available_models, _clean_model_id
@@ -830,6 +861,25 @@ class TelegramBotHandler:
         callback_id = callback.get("id")
         actor_id = callback.get("from", {}).get("id")
         data = str(callback.get("data", ""))
+
+        # 1. Non-owner accessible callbacks
+        if data.startswith("ai_analyze:"):
+            ticker = data[len("ai_analyze:"):].strip()
+            self._answer_callback_query(callback_id, f"正在分析 {ticker}...")
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            if self._can_analyze(actor_id):
+                self._send_stock_analysis(chat_id, ticker)
+            else:
+                self._request_ai_access(chat_id, actor_id, callback.get("from", {}))
+            return
+
+        if data.startswith("ai_request_access"):
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "已送出 AI 申請")
+            self._request_ai_access(chat_id, actor_id, callback.get("from", {}))
+            return
+
+        # 2. Owner-only admin callbacks
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
             return
@@ -916,6 +966,90 @@ class TelegramBotHandler:
             f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{html.escape(report)}",
         )
 
+    def _send_stock_lookup(
+        self,
+        chat_id: Union[int, str],
+        ticker: str,
+        user_id: Optional[Union[int, str]] = None,
+    ):
+        self.send_message(chat_id, f"🔍 正在查詢 {ticker} 的行情與財務估值...", user_id=user_id)
+        state = StateManager()
+        stock_data = state.get_stock_data(ticker)
+
+        if not stock_data or not stock_data.get("prices"):
+            try:
+                orchestrator = Orchestrator(state_manager=state)
+                orchestrator.update_stock(ticker, force=True)
+                stock_data = state.get_stock_data(ticker)
+            except Exception as exc:
+                logger.warning("Auto-fetch on lookup failed for %s: %s", ticker, exc)
+
+        basic_info = stock_data.get("basic_info", {}) if isinstance(stock_data, dict) else {}
+        name = (
+            stock_data.get("name")
+            or basic_info.get("name")
+            or basic_info.get("stock_name")
+            or basic_info.get("公司名稱")
+            or ticker
+        )
+
+        fin = get_financials(ticker, state_manager=state)
+        price_range = get_suggested_price(ticker, state_manager=state)
+
+        prices = stock_data.get("prices", []) if isinstance(stock_data, dict) else []
+        latest_price_str = "N/A"
+        date_str = ""
+        if prices and isinstance(prices[-1], dict):
+            latest = prices[-1]
+            close_val = latest.get("close")
+            if close_val is not None:
+                try:
+                    latest_price_str = f"{float(close_val):,.2f} 元"
+                except (ValueError, TypeError):
+                    latest_price_str = f"{close_val} 元"
+            date_str = str(latest.get("date", ""))
+
+        ranks = state.get_ranks().get("data", [])
+        rank_row = next((r for r in ranks if str(r.get("ticker", "")) == ticker), None)
+        status_str = "一般標的"
+        if rank_row:
+            score = rank_row.get("final_score", 0)
+            entry_sig = rank_row.get("entry_signal", "")
+            if entry_sig:
+                status_str = f"{entry_sig} (評分: {score:.2f})"
+            else:
+                status_str = f"評分: {score:.2f}"
+
+        pe_val = fin.get("pe", 0)
+        pe_display = f"{pe_val}" if pe_val > 0 else ("N/A (虧損)" if fin.get("is_loss") or fin.get("pb", 0) > 0 else "0.0")
+
+        lines = [
+            f"📊 <b>{html.escape(name)} ({ticker}) 個股行情與財務估值</b>\n",
+            f"• <b>最新收盤</b>：<code>{latest_price_str}</code>" + (f" ({date_str})" if date_str else ""),
+            f"• <b>建議買入區間</b>：<code>{price_range}</code>",
+            f"• <b>GVW 狀態</b>：<code>{status_str}</code>\n",
+            "📊 <b>核心財務與評價指標：</b>",
+            f"• <b>ROE</b>：<code>{fin.get('roe', 0)}%</code>",
+            f"• <b>本益比 (P/E)</b>：<code>{pe_display}</code>",
+            f"• <b>股價淨值比 (P/B)</b>：<code>{fin.get('pb', 0)}</code>",
+            f"• <b>股利殖利率</b>：<code>{fin.get('yield', 0)}%</code>\n",
+        ]
+
+        can_analyze = self._can_analyze(user_id or chat_id)
+        if can_analyze:
+            lines.append("💡 點擊下方按鈕可直接啟動 <b>AI 深度多空評估</b>：")
+            btn = [[{"text": f"🤖 執行 {name} AI 評估", "callback_data": f"ai_analyze:{ticker}"}]]
+        else:
+            lines.append("💡 如需 AI 深度多空邏輯評估，請點擊下方按鈕提出申請：")
+            btn = [[{"text": "📝 申請 AI 分析權限", "callback_data": f"ai_request_access:{user_id or chat_id}"}]]
+
+        self.send_message(
+            chat_id,
+            "\n".join(lines),
+            user_id=user_id,
+            reply_markup={"inline_keyboard": btn},
+        )
+
     def poll_once(self):
         if not self.token:
             return
@@ -940,8 +1074,11 @@ class TelegramBotHandler:
                     sender = message.get("from", {})
                     user_id = sender.get("id")
 
+                    chat_type = chat.get("type", "private")
+                    is_private = chat_type == "private"
                     if text and chat_id and (
-                        text.startswith("/")
+                        is_private
+                        or text.startswith("/")
                         or text in MENU_BUTTONS
                         or self.pending_analysis_chats.get(chat_id) == str(user_id or "")
                         or chat_id in self.maintenance_mode_chats
@@ -952,7 +1089,7 @@ class TelegramBotHandler:
                             command,
                             text,
                             user_id=user_id,
-                            chat_type=chat.get("type", "private"),
+                            chat_type=chat_type,
                             user=sender,
                         )
         except Exception as e:
@@ -962,7 +1099,7 @@ class TelegramBotHandler:
         if not self.token:
             return
 
-        # 1. Clear / delete commands for regular users (public default scope has NO menu)
+        # 1. Clear / delete commands for regular users (public default scope has NO menu, uses keyboard)
         try:
             requests.post(
                 f"https://api.telegram.org/bot{self.token}/deleteMyCommands",
