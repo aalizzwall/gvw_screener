@@ -9,6 +9,7 @@ import subprocess
 from typing import Dict, Any, List, Optional, Tuple, Union
 
 from src.state.ai_provider import AIProviderPreferenceStore
+from src.analysis.model_prober import get_intra_provider_pool
 from src.analysis.ai_analyst import (
     _PROVIDERS,
     _provider_key,
@@ -81,47 +82,53 @@ class IssueSolver:
         return json.loads(res.stdout)
 
     def _call_llm(self, prompt: str) -> str:
-        """Invokes the configured AI provider to solve the problem."""
+        """Invokes the configured AI provider to solve the problem with Two-Tier Fallback."""
         chain = self.ai_provider_store.get_chain()
         local_url = self.ai_provider_store.get_local_base_url()
 
         for entry in chain:
-            try:
-                name, model = entry.split("/", 1) if "/" in entry else (entry, "")
-                if name not in _PROVIDERS:
-                    continue
-                key = _provider_key(name, local_base_url=local_url)
-                if not key:
-                    continue
-                model = _resolve_model(name, model, local_base_url=local_url)
-                messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert autonomous software engineer solving a GitHub issue for the 'gvw_screener' repository.\n"
-                            "Safety Guardrails:\n"
-                            "1. ONLY modify files in allowed directories: "
-                            + ", ".join(ALLOWED_PREFIXES)
-                            + "\n"
-                            "2. NEVER delete or weaken existing test assertions in tests/.\n"
-                            "3. Keep changes minimal (max 3 files, max 150 lines total).\n"
-                            "4. Return strictly valid JSON with this format:\n"
-                            "{\n"
-                            '  "explanation": "brief explanation",\n'
-                            '  "files": [\n'
-                            '    {"path": "src/path/to/file.py", "content": "FULL NEW CONTENT"}\n'
-                            "  ]\n"
-                            "}"
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ]
-                return _request_completion(name, key, model, messages, max_tokens=3000)
-            except Exception as e:
-                logger.warning(f"Solver LLM failed with {entry}: {e}")
+            name, model = entry.split("/", 1) if "/" in entry else (entry, "")
+            if name not in _PROVIDERS:
+                continue
+            key = _provider_key(name, local_base_url=local_url)
+            if not key:
                 continue
 
-        raise RuntimeError("所有 AI Provider 均無法調用，無法生成修復代碼。")
+            pool = get_intra_provider_pool(name, key, local_base_url=local_url, preferred_model=model)
+            for cand_model in pool:
+                try:
+                    actual_model = _resolve_model(name, cand_model, local_base_url=local_url)
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert autonomous software engineer solving a GitHub issue for the 'gvw_screener' repository.\n"
+                                "Safety Guardrails:\n"
+                                "1. ONLY modify files in allowed directories: "
+                                + ", ".join(ALLOWED_PREFIXES)
+                                + "\n"
+                                "2. NEVER delete or weaken existing test assertions in tests/.\n"
+                                "3. Keep changes minimal (max 3 files, max 150 lines total).\n"
+                                "4. Return strictly valid JSON with this format:\n"
+                                "{\n"
+                                '  "explanation": "brief explanation",\n'
+                                '  "files": [\n'
+                                '    {"path": "src/path/to/file.py", "content": "FULL NEW CONTENT"}\n'
+                                "  ]\n"
+                                "}"
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ]
+                    return _request_completion(name, key, actual_model, messages, max_tokens=3000)
+                except Exception as e:
+                    logger.warning(f"Solver LLM failed with {name}/{cand_model}: {e}")
+                    status = getattr(getattr(e, "response", None), "status_code", None)
+                    if status == 401:
+                        break
+                    continue
+
+        raise RuntimeError("所有 AI Provider 與備援模型均無法調用，無法生成修復代碼。")
 
     def _parse_llm_json(self, raw_resp: str) -> Dict[str, Any]:
         """Strips markdown fences and parses JSON."""

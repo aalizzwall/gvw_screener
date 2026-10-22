@@ -491,9 +491,30 @@ class TelegramBotHandler:
         lines = ["🩺 <b>AI 模型檢測結果</b>"]
         for result in results:
             icon = "✅" if result["ok"] else "❌"
-            lines.append(
-                f"{icon} <code>{html.escape(result['entry'])}</code>：{html.escape(result['detail'])}"
+            entry = result.get("entry", "")
+            detail = result.get("detail", "")
+            label = result.get("label", "")
+            header = (
+                f"{html.escape(label)} (<code>{html.escape(entry)}</code>)"
+                if label
+                else f"<code>{html.escape(entry)}</code>"
             )
+            lines.append(f"\n{icon} {header}：{html.escape(detail)}")
+
+            probe_info = result.get("probe_status")
+            if probe_info:
+                lines.append(f"   • 模型探測：{html.escape(probe_info)}")
+
+            tier1 = result.get("tier1_results")
+            if tier1:
+                lines.append("   • 第一層 (內部模型備援)：")
+                for idx, t in enumerate(tier1, start=1):
+                    t_icon = "🟢" if t["ok"] else "🔴"
+                    role = "主力" if idx == 1 else f"備援 {idx-1}"
+                    lines.append(
+                        f"     {t_icon} {role} <code>{html.escape(t['model'])}</code>：{html.escape(t['detail'])}"
+                    )
+
         healthy = [r["entry"] for r in results if r["ok"]]
         if not healthy:
             lines.append("\n⚠️ 所有 AI 模型目前皆不可用，維持原順序。")

@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from src.analysis.ai_analyst import analyze_stock, check_providers
+from src.analysis.model_prober import _PROBE_CACHE
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.state.state_manager import StateManager
 
@@ -12,6 +13,7 @@ from src.state.state_manager import StateManager
 class TestAIAnalyst(unittest.TestCase):
 
     def setUp(self):
+        _PROBE_CACHE.clear()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.provider_store = AIProviderPreferenceStore(f"{self.temp_dir.name}/ai_provider.json")
         for target, value in (
@@ -60,6 +62,7 @@ class TestAIAnalyst(unittest.TestCase):
         }]})
 
     def tearDown(self):
+        _PROBE_CACHE.clear()
         self.temp_dir.cleanup()
 
     def test_analysis_uses_saved_taiwan_stock_data_and_returns_model_report(self):
@@ -315,6 +318,82 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertIn("GEMINI_API_KEY", results[1]["detail"])
         self.assertFalse(results[2]["ok"])
         self.assertIn("LOCAL_AI_BASE_URL", results[2]["detail"])
+
+    @patch("src.analysis.model_prober.requests.get")
+    def test_two_tier_fallback_intra_provider_before_inter_provider(self, mock_probe_get):
+        self.provider_store.set_chain(["openai/gpt-4o", "local/active"])
+        probe_resp = Mock(status_code=200)
+        probe_resp.json.return_value = {
+            "data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]
+        }
+        mock_probe_get.return_value = probe_resp
+
+        responses = [
+            self._http_error(429),
+            self._ok_response("gpt-4o-mini intra-provider fallback 成功"),
+        ]
+        with (
+            patch("src.analysis.ai_analyst.LOCAL_AI_BASE_URL", "http://localhost:1234/v1"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key")
+
+        self.assertEqual(report, "gpt-4o-mini intra-provider fallback 成功")
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("api.openai.com", post.call_args_list[0].args[0])
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["model"], "gpt-4o")
+        self.assertIn("api.openai.com", post.call_args_list[1].args[0])
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "gpt-4o-mini")
+
+    @patch("src.analysis.model_prober.requests.get")
+    def test_two_tier_fallback_401_skips_intra_provider_and_cascades(self, mock_probe_get):
+        self.provider_store.set_chain(["openai/gpt-4o", "gemma/gemini-1.5-flash"])
+        probe_resp = Mock(status_code=200)
+        probe_resp.json.return_value = {
+            "data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}, {"id": "gemini-1.5-flash"}]
+        }
+        mock_probe_get.return_value = probe_resp
+
+        err_401 = requests.Response()
+        err_401.status_code = 401
+        err_401._content = b'{"error": {"message": "Invalid API Key"}}'
+
+        responses = [
+            err_401,
+            self._ok_response("Gemma 跨 Provider 接手成功"),
+        ]
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key")
+
+        self.assertEqual(report, "Gemma 跨 Provider 接手成功")
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("api.openai.com", post.call_args_list[0].args[0])
+        self.assertIn("generativelanguage.googleapis.com", post.call_args_list[1].args[0])
+
+    @patch("src.analysis.model_prober.requests.get")
+    def test_dynamic_probe_auto_corrects_invalid_gemma_guess(self, mock_probe_get):
+        self.provider_store.set_chain(["gemma/gemma-3-27b-it"])
+        probe_resp = Mock(status_code=200)
+        probe_resp.json.return_value = {
+            "data": [{"id": "gemini-1.5-flash"}, {"id": "gemini-2.0-flash"}]
+        }
+        mock_probe_get.return_value = probe_resp
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch(
+                "src.analysis.ai_analyst.requests.post",
+                return_value=self._ok_response("修正模型成功"),
+            ) as post,
+        ):
+            report = analyze_stock("2330", self.state)
+
+        self.assertEqual(report, "修正模型成功")
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gemini-1.5-flash")
 
 
 class TestAIProviderPreferenceStore(unittest.TestCase):

@@ -14,6 +14,7 @@ from src.state.ai_provider import AIProviderPreferenceStore
 from src.diagnostics.doctor import GVWDoctor
 from src.agent.tool_registry import ToolRegistry
 from src.agent.session_context import SessionContext
+from src.analysis.model_prober import get_intra_provider_pool
 from src.analysis.ai_analyst import (
     _PROVIDERS,
     _provider_key,
@@ -279,25 +280,35 @@ class MaintenanceAgent:
     # ReAct / Tool-Calling Reasoning Loop
     # ---------------------------------------------------------
     def _call_llm(self, messages: List[Dict[str, str]]) -> str:
-        """Invokes active LLM provider chain."""
+        """Invokes active LLM provider chain with Two-Tier model and provider fallback."""
         chain = self.ai_provider_store.get_chain()
         local_url = self.ai_provider_store.get_local_base_url()
 
         for entry in chain:
-            try:
-                name, model = entry.split("/", 1) if "/" in entry else (entry, "")
-                if name not in _PROVIDERS:
-                    continue
-                key = _provider_key(name, local_base_url=local_url)
-                if not key:
-                    continue
-                model = _resolve_model(name, model, local_base_url=local_url)
-                return _request_completion(name, key, model, messages, max_tokens=2500)
-            except Exception as e:
-                logger.warning(f"MaintenanceAgent LLM call failed with {entry}: {e}")
+            name, model = entry.split("/", 1) if "/" in entry else (entry, "")
+            if name not in _PROVIDERS:
+                continue
+            key = _provider_key(name, local_base_url=local_url)
+            if not key:
                 continue
 
-        raise RuntimeError("所有 AI Provider 均無法調用，無法進行維護模式診斷。")
+            # Tier 1: Intra-provider model pool fallback
+            pool = get_intra_provider_pool(name, key, local_base_url=local_url, preferred_model=model)
+            for cand_model in pool:
+                try:
+                    actual_model = _resolve_model(name, cand_model, local_base_url=local_url)
+                    return _request_completion(name, key, actual_model, messages, max_tokens=2500)
+                except Exception as e:
+                    logger.warning(
+                        f"MaintenanceAgent LLM call failed with {name}/{cand_model}: {e}"
+                    )
+                    status = getattr(getattr(e, "response", None), "status_code", None)
+                    if status == 401:
+                        # Auth failure affects whole provider; cascade to next provider (Tier 2)
+                        break
+                    continue
+
+        raise RuntimeError("所有 AI Provider 與備援模型均無法調用，無法進行維護模式診斷。")
 
     def _parse_json_response(self, raw_text: str) -> Optional[Dict[str, Any]]:
         """

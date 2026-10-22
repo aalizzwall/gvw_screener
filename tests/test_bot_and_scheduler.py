@@ -440,6 +440,38 @@ class TestBotAndScheduler(unittest.TestCase):
         )
         self.assertIn("新主力", bot.send_message.call_args.args[1])
 
+    def test_ai_check_formats_two_tier_and_probing_details(self):
+        bot, provider_store = self._owner_bot_with_provider_store()
+        results = [
+            {
+                "entry": "openai/gpt-4o",
+                "label": "OpenAI",
+                "ok": False,
+                "detail": "HTTP 401",
+                "probe_status": "HTTP 401 (認證失敗，金鑰無效)",
+                "tier1_results": [{"model": "gpt-4o", "ok": False, "detail": "HTTP 401"}],
+            },
+            {
+                "entry": "gemma/gemma-3-27b-it",
+                "label": "Google Gemma",
+                "ok": True,
+                "detail": "150ms",
+                "probe_status": "探測成功 (3 個可用模型)",
+                "tier1_results": [
+                    {"model": "gemini-1.5-flash", "ok": True, "detail": "150ms"}
+                ],
+            },
+        ]
+
+        with patch("gvw_bot.bot_handler.check_providers", return_value=results):
+            bot.handle_command(10, "/ai_check", "/ai_check", user_id=10)
+
+        response_text = bot.send_message.call_args.args[1]
+        self.assertIn("模型探測", response_text)
+        self.assertIn("第一層 (內部模型備援)", response_text)
+        self.assertIn("gemini-1.5-flash", response_text)
+        self.assertIn("新主力", response_text)
+
     def test_owner_can_view_and_set_local_ai_endpoint(self):
         bot, provider_store = self._owner_bot_with_provider_store()
 
