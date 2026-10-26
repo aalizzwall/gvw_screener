@@ -1,4 +1,0 @@
-# Gitleaks ignore list
-# Test fixtures with dummy test keys
-tests/test_shell_tools.py
-tests/*

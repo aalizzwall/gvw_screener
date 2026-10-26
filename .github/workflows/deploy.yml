@@ -40,25 +40,42 @@ jobs:
           python -m pip install ruff
           ruff check src/ gvw_bot/ tests/ --select E9,F63,F7,F82 --show-source
 
+      - name: Secret leak verification
+        run: |
+          python -c "
+          import re, subprocess, sys
+          PATTERNS = [
+              (re.compile(r'\b(gh[pousr]_[A-Za-z0-9]{20,})\b'), 'GitHub Token'),
+              (re.compile(r'\b(sk-[A-Za-z0-9_-]{20,})\b'), 'OpenAI Key'),
+              (re.compile(r'\bAIza[0-9A-Za-z_-]{20,}\b'), 'Google API Key'),
+              (re.compile(r'\b\d{6,}:[A-Za-z0-9_-]{35}\b'), 'Telegram Bot Token')
+          ]
+          files = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
+          leaks = []
+          for f in files:
+              if f.startswith('tests/') or f.endswith('.md') or f.endswith('.png'):
+                  continue
+              try:
+                  with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
+                      for i, line in enumerate(fp, 1):
+                          for pat, desc in PATTERNS:
+                              if pat.search(line):
+                                  leaks.append(f'{f}:{i} contains {desc}')
+              except OSError:
+                  pass
+          if leaks:
+              print('❌ Potential secret leaks detected:', file=sys.stderr)
+              for l in leaks:
+                  print('  ', l, file=sys.stderr)
+              sys.exit(1)
+          print('✅ No secret leaks detected in codebase.')
+          "
+
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
-  security-scan:
-    name: Secret & Vulnerability Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Gitleaks secret scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
   deploy:
-    needs: [test, security-scan]
+    needs: test
     if: github.repository == 'aalizzwall/gvw_screener' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, ARM64]
     concurrency:
