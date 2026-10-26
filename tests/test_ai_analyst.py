@@ -438,61 +438,6 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 2)
         self.assertIn("models/gemini-2.5-flash:generateContent", mock_post.call_args_list[1].args[0])
 
-
-class TestAIProviderPreferenceStore(unittest.TestCase):
-
-    def test_defaults_then_persists_owner_chain(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            self.assertEqual(
-                store.get_chain(),
-                ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it", "local/active"],
-            )
-
-            store.set_chain(["gemma/gemma-3-27b-it", "openai/gpt-4o", "gemma/gemma-3-27b-it"])
-            reloaded = AIProviderPreferenceStore(store.path)
-            self.assertEqual(reloaded.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o"])
-
-    def test_local_base_url_persistence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            self.assertEqual(store.get_local_base_url(), "")
-
-            updated = store.set_local_base_url("http://192.168.1.88:1234/v1")
-            self.assertEqual(updated, "http://192.168.1.88:1234/v1")
-
-            reloaded = AIProviderPreferenceStore(store.path)
-            self.assertEqual(reloaded.get_local_base_url(), "http://192.168.1.88:1234/v1")
-
-            with self.assertRaises(ValueError):
-                store.set_local_base_url("invalid-url")
-
-    def test_add_remove_and_whitelist_validation(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
-            store.set_chain(["openai/gpt-4o"])
-
-            self.assertEqual(
-                store.add("gemma/gemma-3-12b-it", position=1),
-                ["gemma/gemma-3-12b-it", "openai/gpt-4o"],
-            )
-            self.assertEqual(store.remove("1"), ["openai/gpt-4o"])
-            with self.assertRaises(ValueError):
-                store.remove("openai/gpt-4o")  # last entry cannot be removed
-            for bad in ("openai/gpt-9", "foo/bar", "gemma", ""):
-                with self.assertRaises(ValueError):
-                    store.add(bad)
-
-    def test_reads_legacy_primary_format(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = f"{tmp}/ai_provider.json"
-            with open(path, "w", encoding="utf-8") as f:
-                f.write('{"primary": "gemma"}')
-            self.assertEqual(
-                AIProviderPreferenceStore(path).get_chain(),
-                ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini", "local/active"],
-            )
-
     def test_analysis_snapshot_contains_financial_period_labeling(self):
         stock = self.state.get_stock_data("2330")
         stock["financials"]["income_statement"]["year"] = 2024
@@ -568,6 +513,61 @@ class TestAIProviderPreferenceStore(unittest.TestCase):
         self.assertIn("macro_context", context)
         self.assertIn("TAIEX", context)
         self.assertIn("23500", context)
+
+
+class TestAIProviderPreferenceStore(unittest.TestCase):
+
+    def test_defaults_then_persists_owner_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            self.assertEqual(
+                store.get_chain(),
+                ["openai/gpt-4o-mini", "gemma/gemma-3-27b-it", "local/active"],
+            )
+
+            store.set_chain(["gemma/gemma-3-27b-it", "openai/gpt-4o", "gemma/gemma-3-27b-it"])
+            reloaded = AIProviderPreferenceStore(store.path)
+            self.assertEqual(reloaded.get_chain(), ["gemma/gemma-3-27b-it", "openai/gpt-4o"])
+
+    def test_local_base_url_persistence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            self.assertEqual(store.get_local_base_url(), "")
+
+            updated = store.set_local_base_url("http://192.168.1.88:1234/v1")
+            self.assertEqual(updated, "http://192.168.1.88:1234/v1")
+
+            reloaded = AIProviderPreferenceStore(store.path)
+            self.assertEqual(reloaded.get_local_base_url(), "http://192.168.1.88:1234/v1")
+
+            with self.assertRaises(ValueError):
+                store.set_local_base_url("invalid-url")
+
+    def test_add_remove_and_whitelist_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            store.set_chain(["openai/gpt-4o"])
+
+            self.assertEqual(
+                store.add("gemma/gemma-3-12b-it", position=1),
+                ["gemma/gemma-3-12b-it", "openai/gpt-4o"],
+            )
+            self.assertEqual(store.remove("1"), ["openai/gpt-4o"])
+            with self.assertRaises(ValueError):
+                store.remove("openai/gpt-4o")  # last entry cannot be removed
+            for bad in ("openai/gpt-9", "foo/bar", "gemma", ""):
+                with self.assertRaises(ValueError):
+                    store.add(bad)
+
+    def test_reads_legacy_primary_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/ai_provider.json"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"primary": "gemma"}')
+            self.assertEqual(
+                AIProviderPreferenceStore(path).get_chain(),
+                ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini", "local/active"],
+            )
 
 
 if __name__ == "__main__":
