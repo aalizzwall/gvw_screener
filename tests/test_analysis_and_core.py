@@ -17,6 +17,7 @@ from src.state.state_manager import StateManager
 from src.state.in_memory_repository import InMemoryStateRepository
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
+from src.cli import build_arg_parser
 
 class TestAnalysisAndCore(unittest.TestCase):
 
@@ -93,6 +94,16 @@ class TestAnalysisAndCore(unittest.TestCase):
         in_memory_state.save_universe({"2330": "台積電"})
         orchestrator = Orchestrator(state_manager=in_memory_state)
         self.assertEqual(orchestrator.state.get_universe(), {"2330": "台積電"})
+
+    def test_cli_argument_parser(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["screen", "--symbols", "2330", "2454"])
+        self.assertEqual(args.command, "screen")
+        self.assertEqual(args.symbols, ["2330", "2454"])
+
+        args_bt = parser.parse_args(["backtest", "--start-date", "2026-01-01", "--end-date", "2026-10-01"])
+        self.assertEqual(args_bt.command, "backtest")
+        self.assertEqual(args_bt.start_date, "2026-01-01")
 
 if __name__ == "__main__":
     unittest.main()

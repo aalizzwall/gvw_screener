@@ -22,7 +22,7 @@ class HeartbeatManager:
         self.start_time = datetime.now()
         self.jobs_status: Dict[str, Any] = {}
 
-    def update_job_status(self, job_name: str, status: str, message: str = "", extra: Optional[Dict[str, Any]] = None):
+    def update_job_status(self, job_name: str, status: str, message: str = "", extra: Optional[Dict[str, Any]] = None) -> None:
         self.jobs_status[job_name] = {
             "last_run": datetime.now().isoformat(),
             "status": status,
@@ -31,7 +31,7 @@ class HeartbeatManager:
         }
         self.write_heartbeat()
 
-    def write_heartbeat(self, status: str = "running"):
+    def write_heartbeat(self, status: str = "running") -> None:
         payload = {
             "service": "gvw_bot",
             "status": status,

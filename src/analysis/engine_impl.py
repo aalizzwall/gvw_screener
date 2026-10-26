@@ -1,4 +1,4 @@
-from typing import AsyncIterable, Dict, Any
+from typing import AsyncIterable, Dict, Any, Optional
 import asyncio
 from src.analysis.engine import GVWEngine
 
@@ -8,13 +8,13 @@ class GVWEngineImpl(GVWEngine):
     專為 Pi 平台優化，具備高深度與高效率。
     """
 
-    def __init__(self, strategy_params: Dict[str, Any] = None):
+    def __init__(self, strategy_params: Optional[Dict[str, Any]] = None):
         self._params = strategy_params or {
             "weight_price": 0.5,
             "weight_volume": 0.5
         }
 
-    def update_strategy(self, strategy_params: Dict[str, Any]):
+    def update_strategy(self, strategy_params: Dict[str, Any]) -> None:
         """
         更新策略參數，實作時應考慮執行緒安全。
         """
