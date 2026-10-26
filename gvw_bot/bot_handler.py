@@ -7,7 +7,7 @@ import logging
 import html
 import subprocess
 import threading
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 import requests
 
 # Ensure parent directory is in sys.path
@@ -29,6 +29,7 @@ from src.state.ai_provider import (
     AI_CHAIN_PRESETS,
     AI_POLICIES,
     build_strength_fallback_chain,
+    parse_entry,
 )
 from src.reporting.report_engine import generate_daily_report, get_financials, get_suggested_price
 from src.analysis.ranker import run_ranking
