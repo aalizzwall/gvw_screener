@@ -1,4 +1,4 @@
-name: CI and deploy
+name: CI
 
 on:
   pull_request:
@@ -13,6 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -73,45 +74,3 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
-
-  deploy:
-    needs: test
-    if: github.repository == 'aalizzwall/gvw_screener' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, ARM64]
-    concurrency:
-      group: gvw-production-deploy
-      cancel-in-progress: false
-    env:
-      APP_DIR: /home/pi/.hermes/gvw_screener
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy and restart service
-        run: |
-          set -euo pipefail
-          test "$(id -un)" = "pi"
-          mkdir -p "$APP_DIR"
-          test -f "$APP_DIR/.env"
-
-          rsync -a \
-            --exclude='.git/' \
-            --exclude='.env' \
-            --exclude='data/' \
-            --exclude='logs/' \
-            --exclude='*.db' \
-            --exclude='venv*/' \
-            --exclude='.venv/' \
-            ./ "$APP_DIR/"
-
-          python3 -m venv "$APP_DIR/.venv"
-          "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
-          "$APP_DIR/.venv/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
-
-          mkdir -p "$HOME/.config/systemd/user"
-          install -m 0644 "$APP_DIR/systemd/gvw_bot.service" \
-            "$HOME/.config/systemd/user/gvw_bot.service"
-          systemctl --user daemon-reload
-          systemctl --user enable gvw_bot
-          systemctl --user restart gvw_bot
-          sleep 5
-          systemctl --user is-active --quiet gvw_bot
