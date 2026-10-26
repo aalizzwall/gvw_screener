@@ -38,7 +38,7 @@ jobs:
       - name: Critical lint check (Ruff)
         run: |
           python -m pip install ruff
-          ruff check src/ gvw_bot/ tests/ --select E9,F63,F7,F82 --show-source
+          ruff check src/ gvw_bot/ tests/ --select E9,F63,F7,F82
 
       - name: Secret leak verification
         run: |
