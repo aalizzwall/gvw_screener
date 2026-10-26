@@ -3,6 +3,7 @@ import math
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
@@ -25,11 +26,11 @@ class Orchestrator:
 
     def __init__(
         self,
-        state_manager: Optional[StateManager] = None,
+        state_manager: Optional[IStateRepository] = None,
         provider_factory: Optional[DataProviderFactory] = None,
         scoring_strategy: Optional[ScoringStrategy] = None
     ):
-        self.state = state_manager or StateManager()
+        self.state: IStateRepository = state_manager or StateManager()
         self.factory = provider_factory or DataProviderFactory()
         self.scoring_strategy = scoring_strategy or DefaultScoringStrategy()
 

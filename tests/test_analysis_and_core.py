@@ -14,6 +14,7 @@ from src.analysis.ranker import (
 from src.analysis.signals import check_kline_three_steps
 from src.reporting.report_engine import get_suggested_price
 from src.state.state_manager import StateManager
+from src.state.in_memory_repository import InMemoryStateRepository
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
 
@@ -86,6 +87,12 @@ class TestAnalysisAndCore(unittest.TestCase):
                 run_intraday_monitoring(state, factory)
 
         self.assertEqual(factory.fetch_price_history.call_count, 30)
+
+    def test_orchestrator_dependency_inversion_with_in_memory_repository(self):
+        in_memory_state = InMemoryStateRepository()
+        in_memory_state.save_universe({"2330": "台積電"})
+        orchestrator = Orchestrator(state_manager=in_memory_state)
+        self.assertEqual(orchestrator.state.get_universe(), {"2330": "台積電"})
 
 if __name__ == "__main__":
     unittest.main()

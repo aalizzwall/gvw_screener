@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 import pandas as pd
 import numpy as np
 
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
@@ -60,7 +61,7 @@ def format_alert(ticker: str, name: str, score: float, status: str) -> Optional[
     return None
 
 def run_intraday_monitoring(
-    state_manager: Optional[StateManager] = None,
+    state_manager: Optional[IStateRepository] = None,
     provider_factory: Optional[DataProviderFactory] = None
 ) -> List[str]:
     """
