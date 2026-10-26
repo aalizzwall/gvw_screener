@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import json
+import re
 import logging
 import html
 import subprocess
@@ -100,6 +102,65 @@ PUBLIC_REPLY_KEYBOARD = {
 }
 
 
+def format_telegram_html(text: str) -> str:
+    """Format markdown text safely into Telegram HTML while preserving code blocks and escaping special chars."""
+    if not text:
+        return ""
+    s = str(text).strip()
+
+    # Unwrap JSON if text was somehow wrapped in raw action JSON
+    if s.startswith("{") and ("\"action\"" in s or "\"final_answer\"" in s or "\"answer\"" in s):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict) and "answer" in parsed:
+                s = str(parsed["answer"]).strip()
+        except Exception:
+            m = re.search(r'"(?:answer|final_answer)"\s*:\s*"([\s\S]*?)"\s*\}', s)
+            if m:
+                ans_raw = m.group(1)
+                try:
+                    s = json.loads(f'"{ans_raw}"').strip()
+                except Exception:
+                    s = ans_raw.replace('\\n', '\n').replace('\\"', '"').strip()
+
+    code_blocks = []
+    inline_codes = []
+
+    def save_code_block(match):
+        code = match.group(1)
+        idx = len(code_blocks)
+        escaped_code = html.escape(code.strip())
+        code_blocks.append(f"<pre><code>{escaped_code}</code></pre>")
+        return f"___CODE_BLOCK_{idx}___"
+
+    def save_inline_code(match):
+        code = match.group(1)
+        idx = len(inline_codes)
+        escaped_code = html.escape(code)
+        inline_codes.append(f"<code>{escaped_code}</code>")
+        return f"___INLINE_CODE_{idx}___"
+
+    # Multi-line or single-line code block: ```[lang]\n...\n``` or ```...```
+    s = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```", save_code_block, s)
+
+    # Inline code: `code`
+    s = re.sub(r"`([^`\n]+)`", save_inline_code, s)
+
+    # Escape HTML special chars in prose (&, <, >)
+    s = html.escape(s)
+
+    # Markdown Bold: **bold**
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+
+    # Restore placeholders
+    for idx, replacement in enumerate(inline_codes):
+        s = s.replace(f"___INLINE_CODE_{idx}___", replacement)
+    for idx, replacement in enumerate(code_blocks):
+        s = s.replace(f"___CODE_BLOCK_{idx}___", replacement)
+
+    return s
+
+
 class TelegramBotHandler:
     """
     Handles Telegram Bot commands and interactions via long polling.
@@ -151,20 +212,37 @@ class TelegramBotHandler:
         if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": parse_mode,
-            "reply_markup": (
-                reply_markup if reply_markup is not None else self._keyboard_for_chat(chat_id, user_id=user_id)
-            ),
-        }
-        try:
-            r = requests.post(url, json=payload, timeout=20)
-            return r.status_code == 200
-        except Exception as e:
-            logger.error(f"Error sending telegram message: {e}")
-            return False
+
+        # Telegram has a 4096 character limit per message; safely chunk if needed
+        chunks = [text[i : i + 3800] for i in range(0, len(text), 3800)] if len(text) > 3800 else [text]
+        success = True
+        for idx, chunk in enumerate(chunks):
+            markup = (
+                (reply_markup if reply_markup is not None else self._keyboard_for_chat(chat_id, user_id=user_id))
+                if idx == len(chunks) - 1
+                else None
+            )
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": parse_mode,
+                "reply_markup": markup,
+            }
+            try:
+                r = requests.post(url, json=payload, timeout=20)
+                if r.status_code != 200:
+                    logger.warning(f"Telegram sendMessage error ({r.status_code}): {r.text}")
+                    # If HTML parsing failed due to invalid tags, retry once with plain text
+                    if parse_mode == "HTML" and "can't parse entities" in str(r.text).lower():
+                        payload["parse_mode"] = ""
+                        r_retry = requests.post(url, json=payload, timeout=20)
+                        if r_retry.status_code == 200:
+                            continue
+                    success = False
+            except Exception as e:
+                logger.error(f"Error sending telegram message: {e}")
+                success = False
+        return success
 
     def send_photo(
         self,
@@ -887,7 +965,8 @@ class TelegramBotHandler:
     def _handle_maintenance_query(self, chat_id: Union[int, str], question: str):
         try:
             answer = self.maintenance_agent.ask(question, session_id=str(chat_id))
-            self.send_message(chat_id, f"🛠️ <b>【維護診斷報告】</b>\n\n{answer}")
+            formatted_answer = format_telegram_html(answer)
+            self.send_message(chat_id, f"🛠️ <b>【維護診斷報告】</b>\n\n{formatted_answer}")
         except Exception as e:
             logger.error(f"Maintenance agent query error: {e}", exc_info=True)
             self.send_message(chat_id, f"❌ 診斷過程發生異常：<code>{html.escape(str(e))}</code>")
