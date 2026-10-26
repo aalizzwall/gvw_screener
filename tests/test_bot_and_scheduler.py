@@ -950,5 +950,44 @@ class TestBotAndScheduler(unittest.TestCase):
                 "local/active",
             ])
 
+    def test_ai_dashboard_and_policy_switch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AIProviderPreferenceStore(f"{temp_dir}/ai_pref.json")
+            bot = TelegramBotHandler(token="test-token", owner_user_id="999", ai_provider_store=store)
+            bot.send_message = Mock()
+
+            # Non-owner blocked
+            bot.handle_command(10, "/ai", "/ai", user_id=10)
+            self.assertIn("僅限系統負責人", bot.send_message.call_args[0][1])
+
+            # Owner views dashboard
+            bot.send_message.reset_mock()
+            bot.handle_command(999, "/ai", "/ai", user_id=999)
+            bot.send_message.assert_called_once()
+            dashboard_text = bot.send_message.call_args[0][1]
+            markup = bot.send_message.call_args[1].get("reply_markup", {})
+            self.assertIn("GVW AI 智慧控制中心", dashboard_text)
+            self.assertIn("當前策略", dashboard_text)
+            self.assertTrue(any("ai_policy:auto" in str(row) for row in markup.get("inline_keyboard", [])))
+
+            # Owner switches policy via command: /ai gemini
+            bot.send_message.reset_mock()
+            bot.handle_command(999, "/ai", "/ai gemini", user_id=999)
+            self.assertEqual(store.get_policy(), "gemini")
+            self.assertIn("Gemini 優先階梯", bot.send_message.call_args[0][1])
+
+            # Callback query switches policy to openai
+            bot.send_message.reset_mock()
+            bot._answer_callback_query = Mock()
+            bot.handle_callback_query({
+                "id": "cb-policy-1",
+                "from": {"id": 999},
+                "data": "ai_policy:openai",
+                "message": {"chat": {"id": 999}},
+            })
+            self.assertEqual(store.get_policy(), "openai")
+            bot._answer_callback_query.assert_called_once_with("cb-policy-1", "已套用：⚡ OpenAI 優先階梯")
+            self.assertIn("OpenAI 優先階梯", bot.send_message.call_args[0][1])
+
 if __name__ == "__main__":
     unittest.main()

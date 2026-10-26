@@ -6,7 +6,11 @@ import requests
 
 from src.analysis.ai_analyst import analyze_stock, check_providers, _request_completion
 from src.analysis.model_prober import _PROBE_CACHE
-from src.state.ai_provider import AIProviderPreferenceStore
+from src.state.ai_provider import (
+    AIProviderPreferenceStore,
+    build_strength_fallback_chain,
+    AI_POLICIES,
+)
 from src.state.state_manager import StateManager
 
 
@@ -568,6 +572,48 @@ class TestAIProviderPreferenceStore(unittest.TestCase):
                 AIProviderPreferenceStore(path).get_chain(),
                 ["gemma/gemma-3-27b-it", "openai/gpt-4o-mini", "local/active"],
             )
+
+    def test_build_strength_fallback_chain_guarantees_local_active(self):
+        # 1. Auto policy
+        auto_chain = build_strength_fallback_chain("auto")
+        self.assertEqual(auto_chain[-1], "local/active")
+        self.assertIn("gemma/gemini-3.5-flash-lite", auto_chain)
+        self.assertIn("openai/gpt-4o-mini", auto_chain)
+
+        # 2. Gemini policy
+        gemini_chain = build_strength_fallback_chain("gemini")
+        self.assertEqual(gemini_chain[-1], "local/active")
+        self.assertTrue(gemini_chain[0].startswith("gemma/"))
+
+        # 3. OpenAI policy
+        openai_chain = build_strength_fallback_chain("openai")
+        self.assertEqual(openai_chain[-1], "local/active")
+        self.assertTrue(openai_chain[0].startswith("openai/"))
+
+        # 4. Local policy
+        local_chain = build_strength_fallback_chain("local")
+        self.assertEqual(local_chain[0], "local/active")
+        self.assertIn("local/active", local_chain)
+
+    def test_store_policy_management(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AIProviderPreferenceStore(f"{tmp}/ai_provider.json")
+            self.assertEqual(store.get_policy(), "auto")
+
+            # Switch policy to gemini
+            chain = store.set_policy("gemini")
+            self.assertEqual(store.get_policy(), "gemini")
+            self.assertEqual(store.get_chain(), chain)
+            self.assertEqual(chain[-1], "local/active")
+
+            # Switching to invalid policy raises ValueError
+            with self.assertRaises(ValueError):
+                store.set_policy("non_existent_policy")
+
+            # Explicit set_chain marks policy as custom
+            store.set_chain(["openai/gpt-4o"])
+            self.assertEqual(store.get_policy(), "custom")
+            self.assertEqual(store.get_chain(), ["openai/gpt-4o"])
 
 
 if __name__ == "__main__":
