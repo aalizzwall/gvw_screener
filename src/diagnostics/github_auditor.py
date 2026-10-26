@@ -27,12 +27,18 @@ class GitHubAuditor:
             )
             if res.returncode == 0 and res.stdout.strip():
                 url = res.stdout.strip()
-                if "github.com" in url:
-                    part = url.split("github.com")[-1].lstrip(":").lstrip("/")
-                    if part.endswith(".git"):
-                        part = part[:-4]
-                    if "/" in part:
-                        return part
+                part = ""
+                if url.startswith("git@github.com:"):
+                    part = url[len("git@github.com:"):]
+                elif url.startswith("https://github.com/"):
+                    part = url[len("https://github.com/"):]
+                elif url.startswith("http://github.com/"):
+                    part = url[len("http://github.com/"):]
+
+                if part.endswith(".git"):
+                    part = part[:-4]
+                if "/" in part:
+                    return part.strip()
         except Exception:
             # Ignore git remote detection error and fall back to default
             pass
@@ -314,3 +320,4 @@ class GitHubAuditor:
         except Exception as e:
             logger.error(f"Error creating GitHub audit issue: {e}")
             raise
+

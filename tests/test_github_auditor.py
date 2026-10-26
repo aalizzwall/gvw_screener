@@ -1,5 +1,4 @@
 import json
-import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -203,3 +202,4 @@ class TestGitHubAuditor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
