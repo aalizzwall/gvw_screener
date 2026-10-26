@@ -13,19 +13,65 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Syntax and compile check
+        run: |
+          python -m py_compile $(find src gvw_bot tests -name "*.py")
+
+      - name: Critical lint check (Ruff)
+        run: |
+          python -m pip install ruff
+          ruff check src/ gvw_bot/ tests/ --select E9,F63,F7,F82
+
+      - name: Secret leak verification
+        run: |
+          python -c "
+          import re, subprocess, sys
+          PATTERNS = [
+              (re.compile(r'\b(gh[pousr]_[A-Za-z0-9]{20,})\b'), 'GitHub Token'),
+              (re.compile(r'\b(sk-[A-Za-z0-9_-]{20,})\b'), 'OpenAI Key'),
+              (re.compile(r'\bAIza[0-9A-Za-z_-]{20,}\b'), 'Google API Key'),
+              (re.compile(r'\b\d{6,}:[A-Za-z0-9_-]{35}\b'), 'Telegram Bot Token')
+          ]
+          files = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
+          leaks = []
+          for f in files:
+              if f.startswith('tests/') or f.endswith('.md') or f.endswith('.png'):
+                  continue
+              try:
+                  with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
+                      for i, line in enumerate(fp, 1):
+                          for pat, desc in PATTERNS:
+                              if pat.search(line):
+                                  leaks.append(f'{f}:{i} contains {desc}')
+              except OSError:
+                  pass
+          if leaks:
+              print('❌ Potential secret leaks detected:', file=sys.stderr)
+              for l in leaks:
+                  print('  ', l, file=sys.stderr)
+              sys.exit(1)
+          print('✅ No secret leaks detected in codebase.')
+          "
+
+      - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
   deploy:

@@ -1,0 +1,36 @@
+area:bot:
+  - changed-files:
+      - any-glob-to-any-file: "gvw_bot/**"
+
+area:agent:
+  - changed-files:
+      - any-glob-to-any-file: "src/agent/**"
+
+area:analysis:
+  - changed-files:
+      - any-glob-to-any-file: "src/analysis/**"
+
+area:reporting:
+  - changed-files:
+      - any-glob-to-any-file: "src/reporting/**"
+
+area:providers:
+  - changed-files:
+      - any-glob-to-any-file: "src/providers/**"
+
+area:core:
+  - changed-files:
+      - any-glob-to-any-file: "src/core/**"
+
+area:state:
+  - changed-files:
+      - any-glob-to-any-file: "src/state/**"
+
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file: "tests/**"
+

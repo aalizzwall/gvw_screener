@@ -1,0 +1,51 @@
+name: "🐛 問題回報 (Bug Report)"
+description: "提報 GVW Screener 或 gvw_bot 運行中的異常、錯誤或崩潰"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝回報問題！請詳細填寫以下資訊，以便迅速定位與排查。
+  - type: input
+    id: version
+    attributes:
+      label: "系統版本 / Commit Hash"
+      description: "請提供目前運行的 commit id（可透過 Telegram 輸入 /status 查看）"
+      placeholder: "例：ad27b3d"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: "受影響模組 (Component)"
+      options:
+        - "gvw_bot (Telegram 機器人與指令互動)"
+        - "scheduler (背景自主排程與定時任務)"
+        - "data_collection (TWSE / FinMind / Yahoo 資料採集)"
+        - "analysis_ranker (選股評分與 K 線三步法)"
+        - "agent_maintain (維護 Agent / Shell Tools / Issue Solver)"
+        - "systemd / deploy (系統常駐服務與部署)"
+        - "other (其他)"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: "問題描述 (Description)"
+      description: "清晰簡潔地描述發生的異常現象"
+      placeholder: "發生了什麼異常？預期的行為是什麼？實際發生了什麼？"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: "日誌輸出 / 錯誤訊息 (Logs & Error Messages)"
+      description: "請貼上相關的 terminal 報錯或 `logs/gvw_bot.log` 日誌內容（機敏 Token 請先遮蔽）"
+      render: shell
+  - type: textarea
+    id: steps
+    attributes:
+      label: "重現步驟 (Reproduction Steps)"
+      description: "如何重現這個問題？"
+      placeholder: "1. 執行 ...\n2. 輸入 ...\n3. 出現錯誤 ..."
+
