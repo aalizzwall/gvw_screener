@@ -13,23 +13,52 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Syntax and compile check
+        run: |
+          python -m py_compile $(find src gvw_bot tests -name "*.py")
+
+      - name: Critical lint check (Ruff)
+        run: |
+          python -m pip install ruff
+          ruff check src/ gvw_bot/ tests/ --select E9,F63,F7,F82 --show-source
+
+      - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
+  security-scan:
+    name: Secret & Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
   deploy:
-    needs: test
+    needs: [test, security-scan]
     if: github.repository == 'aalizzwall/gvw_screener' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, ARM64]
     concurrency:

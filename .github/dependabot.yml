@@ -4,37 +4,51 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
+    reviewers:
+      - aalizzwall
+    labels:
+      - "dependencies"
+      - "area:core"
     groups:
       weekly-dependencies:
         applies-to: version-updates
         patterns:
           - "*"
     commit-message:
-      prefix: chore(deps)
+      prefix: "chore(deps)"
 
   - package-ecosystem: pip
     directory: /src/dashboard
     schedule:
       interval: weekly
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
+    reviewers:
+      - aalizzwall
+    labels:
+      - "dependencies"
     groups:
       weekly-dependencies:
         applies-to: version-updates
         patterns:
           - "*"
     commit-message:
-      prefix: chore(deps)
+      prefix: "chore(deps)"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
+    reviewers:
+      - aalizzwall
+    labels:
+      - "dependencies"
+      - "area:ci"
     groups:
       weekly-dependencies:
         applies-to: version-updates
         patterns:
           - "*"
     commit-message:
-      prefix: chore(ci)
+      prefix: "chore(ci)"

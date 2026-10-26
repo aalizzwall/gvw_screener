@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "🔒 安全漏洞私密通報 (Security Advisory)"
+    url: https://github.com/aalizzwall/gvw_screener/security/advisories/new
+    about: "若發現安全漏洞、憑證外洩或權限風險，請循私密管道通報，切勿公開建立 Issue。"

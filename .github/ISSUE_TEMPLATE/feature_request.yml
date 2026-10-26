@@ -1,0 +1,33 @@
+name: "✨ 功能建議 (Feature Request)"
+description: "為 GVW Screener 提出新功能、新指標或架構改進構想"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝您為 GVW Screener 提供改進構想！
+  - type: textarea
+    id: motivation
+    attributes:
+      label: "需求動機與目標 (Goal & Context)"
+      description: "希望解決什麼問題？為什麼需要這個功能？"
+      placeholder: "目前的困境是... 希望能夠實現..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "功能提案與預期行為 (Proposal & Expected Behavior)"
+      description: "您期望的新功能細節、演算法或呈現方式（可附上參考附圖或格式）"
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "建議優先級 (Priority)"
+      options:
+        - "High (核心選股或服務重大改進)"
+        - "Medium (常規增強或優化)"
+        - "Low (非急迫需求或實驗性構想)"
+    validations:
+      required: true

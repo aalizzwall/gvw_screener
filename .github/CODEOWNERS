@@ -1,0 +1,19 @@
+# CODEOWNERS for GVW Screener
+# Defines individuals or teams responsible for code review in this repository.
+
+# Default owner for everything
+* @aalizzwall
+
+# CI/CD and GitHub configuration
+/.github/           @aalizzwall
+
+# Bot & Service Core
+/gvw_bot/           @aalizzwall
+/systemd/           @aalizzwall
+
+# Agents & Autonomous Execution
+/src/agent/         @aalizzwall
+/src/diagnostics/   @aalizzwall
+
+# Global configuration and credentials
+/src/config.py      @aalizzwall
