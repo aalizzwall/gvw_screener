@@ -14,7 +14,7 @@ from src.providers.valuation_service import ValuationService
 from src.providers.factory import DataProviderFactory
 from src.reporting.report_engine import get_financials
 from src.analysis.ai_analyst import _stock_snapshot
-from gvw_bot.bot_handler import TelegramBotHandler
+from gvw_bot.bot_handler import TelegramBotHandler, format_telegram_html
 from src.state.state_manager import StateManager
 from src.state.ai_provider import AIProviderPreferenceStore
 
@@ -118,6 +118,69 @@ class TestMaintenanceAgent(unittest.TestCase):
         self.agent.clear_session("chat-1")
         session = self.agent.get_or_create_session("chat-1")
         self.assertEqual(len(session.history), 0)
+
+    def test_parse_json_response_with_inner_code_blocks(self):
+        raw_json_with_code = (
+            '{\n'
+            '  "action": "final_answer",\n'
+            '  "answer": "報告負責人：\\n1. **重啟指令**：\\n```bash\\nsudo systemctl --user restart gvw_bot\\n```\\n2. 請檢查 `.env`。"\n'
+            '}'
+        )
+        parsed = self.agent._parse_json_response(raw_json_with_code)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["action"], "final_answer")
+        self.assertIn("sudo systemctl --user restart gvw_bot", parsed["answer"])
+
+    def test_parse_json_response_wrapped_in_outer_fence(self):
+        wrapped = (
+            '```json\n'
+            '{\n'
+            '  "action": "final_answer",\n'
+            '  "answer": "系統健康狀態良好。"\n'
+            '}\n'
+            '```'
+        )
+        parsed = self.agent._parse_json_response(wrapped)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["action"], "final_answer")
+        self.assertEqual(parsed["answer"], "系統健康狀態良好。")
+
+    def test_ask_unwraps_malformed_json_fallback(self):
+        malformed = (
+            '{"action": "final_answer", "answer": "請重啟服務：\\n```bash\\nsudo systemctl restart gvw_bot\\n```"}'
+        )
+        with patch.object(self.agent, "_call_llm", return_value=malformed):
+            ans = self.agent.ask("如何重啟？")
+            self.assertNotIn('{"action": "final_answer"', ans)
+            self.assertIn("sudo systemctl restart gvw_bot", ans)
+
+    def test_format_telegram_html(self):
+        markdown_text = (
+            "報告負責人：\n\n"
+            "1. **關於 .env 設定**：\n"
+            "   - 經檢查 `/home/pi/.env` 存在\n"
+            "   - 延遲小於 <500ms 正常\n"
+            "2. **執行指令**：\n"
+            "```bash\n"
+            "sudo systemctl --user restart gvw_bot\n"
+            "```\n"
+        )
+        html_out = format_telegram_html(markdown_text)
+        self.assertIn("<b>關於 .env 設定</b>", html_out)
+        self.assertIn("<code>/home/pi/.env</code>", html_out)
+        self.assertIn("&lt;500ms", html_out)
+        self.assertIn("<pre><code>sudo systemctl --user restart gvw_bot</code></pre>", html_out)
+
+    def test_format_telegram_html_unwraps_raw_json(self):
+        raw_json_text = (
+            '{\n'
+            '  "action": "final_answer",\n'
+            '  "answer": "系統排查完畢，**一切正常**。"\n'
+            '}'
+        )
+        html_out = format_telegram_html(raw_json_text)
+        self.assertNotIn('"action"', html_out)
+        self.assertIn("<b>一切正常</b>", html_out)
 
     def test_tool_inspect_scheduler_jobs(self):
         mock_job = Mock()

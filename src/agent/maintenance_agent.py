@@ -372,36 +372,54 @@ class MaintenanceAgent:
     def _parse_json_response(self, raw_text: str) -> Optional[Dict[str, Any]]:
         """
         Robust JSON extractor for LLM outputs.
-        Handles markdown code fences, trailing commas, and text wrappers.
+        Handles markdown code fences, trailing commas, inner code blocks, and text wrappers.
         """
         cleaned = raw_text.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
 
-        # Try direct parse
+        # 1. Try direct parse first before touching code fences (avoids breaking internal code blocks)
         try:
             parsed = json.loads(cleaned)
             if isinstance(parsed, dict) and "action" in parsed:
                 return parsed
         except Exception:
-            # Fallback to regex pattern extraction if raw JSON parse fails
             pass
 
-        # Try regex search for {"action": ...}
-        match = re.search(r"\{[\s\S]*\"action\"[\s\S]*\}", cleaned)
-        if match:
-            candidate = match.group(0)
-            # Remove trailing commas before closing braces/brackets
-            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        # 2. Extract outer markdown code fence (```json ... ``` or ``` ... ```) if wrapped
+        fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", cleaned)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
             try:
                 parsed = json.loads(candidate)
                 if isinstance(parsed, dict) and "action" in parsed:
                     return parsed
             except Exception:
-                # Candidate snippet is not valid JSON; continue to return None
                 pass
+
+        # 3. Search outermost matching { ... } containing "action"
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = cleaned[start : end + 1]
+            candidate_clean = re.sub(r",\s*([}\]])", r"\1", candidate)
+            try:
+                parsed = json.loads(candidate_clean)
+                if isinstance(parsed, dict) and "action" in parsed:
+                    return parsed
+            except Exception:
+                pass
+
+        # 4. Fallback regex specifically extracting final_answer or answer if JSON was malformed
+        match_final = re.search(
+            r'"action"\s*:\s*"final_answer"[\s\S]*?"answer"\s*:\s*"([\s\S]*?)"\s*\}',
+            cleaned,
+        )
+        if match_final:
+            ans_raw = match_final.group(1)
+            try:
+                ans_clean = json.loads(f'"{ans_raw}"')
+            except Exception:
+                ans_clean = ans_raw.replace('\\n', '\n').replace('\\"', '"')
+            return {"action": "final_answer", "answer": ans_clean}
 
         return None
 
@@ -453,8 +471,16 @@ class MaintenanceAgent:
             action_dict = self._parse_json_response(raw_response)
 
             if not action_dict:
-                # Model directly returned plain text diagnosis
-                answer = raw_response.strip()
+                # Model directly returned plain text, or leaked a JSON answer wrapper
+                match_fallback = re.search(r'"(?:answer|final_answer)"\s*:\s*"([\s\S]*?)"\s*\}', raw_response)
+                if match_fallback:
+                    ans_raw = match_fallback.group(1)
+                    try:
+                        answer = json.loads(f'"{ans_raw}"').strip()
+                    except Exception:
+                        answer = ans_raw.replace('\\n', '\n').replace('\\"', '"').strip()
+                else:
+                    answer = raw_response.strip()
                 session.add_assistant_message(answer)
                 return answer
 
