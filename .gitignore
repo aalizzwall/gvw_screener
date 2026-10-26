@@ -3,6 +3,23 @@ data/
 *.json
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Python Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+src/dashboard/venv/
+
+# Package builds & test caches
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Environment & Credentials
 .env
@@ -21,6 +38,23 @@ logs/*.log
 !logs/.gitkeep
 run_log.txt
 
+# Generated Charts & Visual Outputs
+output/
+*.png
+*.jpg
+*.jpeg
+
+# System & Editor Artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+
 # Backup & Intermediate Files
 *.bak
 *.new
@@ -31,5 +65,3 @@ run_log.txt
 # Local Development / Agent Simulation Dirs
 .hermes/
 scoring_results.db
-src/dashboard/venv/
-src/dashboard/venv

@@ -1,5 +1,13 @@
 # GVW Screener (Garrett Van Wagoner 台股量化選股與即時監控系統)
 
+<p align="left">
+  <a href="https://github.com/aalizzwall/gvw_screener/actions/workflows/deploy.yml"><img src="https://github.com/aalizzwall/gvw_screener/actions/workflows/deploy.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/aalizzwall/gvw_screener/actions/workflows/codeql.yml"><img src="https://github.com/aalizzwall/gvw_screener/actions/workflows/codeql.yml/badge.svg" alt="CodeQL Status"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.9%20%7C%203.11-blue.svg" alt="Python Version"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/badge/code%20style-ruff-000000.svg" alt="Code Style: Ruff"></a>
+</p>
+
 > [!IMPORTANT]
 > **免責聲明 (Disclaimer)**：
 > 本專案為開源量化研究、演算法回測與技術探討工具，所有評分排名、指標篩選、盤中信號與 AI 分析內容僅供學術與技術參考，**絕不構成任何形式之投資建議、財務諮詢或買賣推薦**。股市交易具有高度風險，使用者應自行查證資料並評估風險，對於本系統產出之任何數據所做出之任何決策，均由使用者承擔全部責任。
