@@ -4,7 +4,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Any, List, Optional, Tuple
+from typing import Callable, Any, List, Optional, Tuple
 
 # Ensure parent directory is in path so we can import src.*
 current_dir = os.path.dirname(os.path.abspath(__file__))

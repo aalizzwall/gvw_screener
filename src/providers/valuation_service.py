@@ -2,7 +2,7 @@ import logging
 import math
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 

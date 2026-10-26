@@ -1,5 +1,4 @@
 import os
-import sys
 import glob
 import json
 import time
@@ -93,6 +92,7 @@ class GVWDoctor:
                     temp_raw = f.read().strip()
                 return round(float(temp_raw) / 1000.0, 1)
             except Exception:
+                # Ignore sysfs temperature reading failure and fall back to vcgencmd
                 pass
 
         # Try vcgencmd if available
@@ -103,6 +103,7 @@ class GVWDoctor:
                 temp_str = res.split("temp=")[1].split("'")[0]
                 return float(temp_str)
         except Exception:
+            # Ignore vcgencmd execution failure on non-RPi systems
             pass
 
         return None

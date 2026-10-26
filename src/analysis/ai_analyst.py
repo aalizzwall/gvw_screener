@@ -67,6 +67,7 @@ def _format_financial_period(stock: Dict[str, Any], financials: Dict[str, Any]) 
             p_type = "單季" if q_num == 1 else "累計"
             return f"{yr}Q{q_num} ({p_type})", p_type
         except (ValueError, TypeError):
+            # Ignore date parse errors and continue to alternative date formats
             pass
 
     date_str = (
@@ -98,6 +99,7 @@ def _format_financial_period(stock: Dict[str, Any], financials: Dict[str, Any]) 
                     p_type = "累計"
                 return f"{yr}Q{q_num} ({p_type})", p_type
         except (ValueError, TypeError):
+            # Fall back to default period format if parsing date fails
             pass
 
     return "最新公告期別 (累計)", "累計"
@@ -157,11 +159,13 @@ def _compute_growth_metrics(
         try:
             rev_yoy = float(pl["revenue_yoy"])
         except (ValueError, TypeError):
+            # Fall back to None if revenue YoY format cannot be converted to float
             pass
     if rev_qoq is None and pl.get("revenue_qoq") is not None:
         try:
             rev_qoq = float(pl["revenue_qoq"])
         except (ValueError, TypeError):
+            # Fall back to None if revenue QoQ format cannot be converted to float
             pass
 
     price_chg_5d = None
@@ -179,6 +183,7 @@ def _compute_growth_metrics(
                     if ref_20 > 0:
                         price_chg_20d = round(((last_close - ref_20) / ref_20) * 100, 2)
         except (ValueError, TypeError):
+            # Ignore price calculation errors on missing or invalid close values
             pass
 
     data_status = (

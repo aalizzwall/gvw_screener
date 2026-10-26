@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import time
 import sqlite3
@@ -8,12 +7,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.agent.maintenance_agent import MaintenanceAgent
-from src.agent.tool_registry import ToolRegistry, Tool
+from src.agent.tool_registry import ToolRegistry
 from src.agent.session_context import SessionContext
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.valuation_service import ValuationService
 from src.providers.factory import DataProviderFactory
-from src.reporting.report_engine import get_financials, generate_daily_report
+from src.reporting.report_engine import get_financials
 from src.analysis.ai_analyst import _stock_snapshot
 from gvw_bot.bot_handler import TelegramBotHandler
 from src.state.state_manager import StateManager

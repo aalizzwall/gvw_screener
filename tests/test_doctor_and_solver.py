@@ -1,12 +1,10 @@
 import os
-import sys
 import json
 import time
-import shutil
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from src.diagnostics.doctor import GVWDoctor
 from src.agent.issue_solver import IssueSolver, SecurityGuardrailError

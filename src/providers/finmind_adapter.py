@@ -186,6 +186,7 @@ class FinMindAdapter(DataProvider):
                 res["period_type"] = p_type
                 res["period_label"] = f"{yr}Q{q_num} ({p_type})"
             except (ValueError, TypeError):
+                # Ignore date parsing errors and leave period unformatted
                 pass
 
         return res

@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from src.analysis.backtest.engine_impl import SQLiteBacktestEngine
 from src.analysis.engine_impl import GVWEngineImpl

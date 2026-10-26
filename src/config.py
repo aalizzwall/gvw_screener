@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from typing import Optional
 
 def _find_env_file() -> Optional[str]:
@@ -28,6 +27,7 @@ def load_env():
                         if k not in os.environ:
                             os.environ[k] = v
         except Exception:
+            # Ignore errors reading optional env file
             pass
 
 # Initialize environment variables

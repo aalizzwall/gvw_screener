@@ -1,8 +1,6 @@
-import os
-import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
 
@@ -143,6 +141,7 @@ def calculate_quality_score(financials_data: Any) -> float:
             roe = (current_ni / current_equity) if current_equity > 0 else 0.0
             return min(1.0, max(0.0, float(roe / 0.15)))
     except Exception:
+        # Fall back to quality score 0.0 if financial statement parsing fails
         pass
     return 0.0
 
@@ -219,6 +218,7 @@ def run_ranking(state_manager: Optional[IStateRepository] = None) -> Dict[str, A
                         yield_val = val['yield']
                         pe_val = val['pe']
                 except Exception:
+                    # Ignore valuation lookup failure and proceed with defaults
                     pass
 
             all_stocks.append({

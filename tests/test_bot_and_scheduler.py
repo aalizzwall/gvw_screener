@@ -4,7 +4,7 @@ import logging
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import Mock, patch
 from gvw_bot.heartbeat import HeartbeatManager
 from gvw_bot.main import CredentialRedactionFilter
@@ -37,8 +37,9 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("[REDACTED]", record.getMessage())
 
     def test_startup_modules_import(self):
-        import gvw_bot.bot_handler
-        import src.persistence.sqlite_repository
+        import importlib
+        self.assertIsNotNone(importlib.import_module("gvw_bot.bot_handler"))
+        self.assertIsNotNone(importlib.import_module("src.persistence.sqlite_repository"))
 
     def test_bot_sends_persistent_keyboard(self):
         bot = TelegramBotHandler(token="test-token")
@@ -584,6 +585,7 @@ class TestBotAndScheduler(unittest.TestCase):
             try:
                 os.remove(self.test_hb_file)
             except Exception:
+                # Ignore cleanup error if file was already removed
                 pass
 
     def test_heartbeat_lifecycle(self):

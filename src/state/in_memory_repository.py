@@ -1,12 +1,5 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from src.state.interfaces import IStateRepository
-from src.config import (
-    DATA_DIR,
-    HEALTH_STATUS_FILE,
-    UNIVERSE_FILE,
-    RESULT_FILE,
-    MARKET_INDEX_FILE,
-)
 
 class InMemoryStateRepository(IStateRepository):
     """

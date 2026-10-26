@@ -1,12 +1,10 @@
 import os
-import sys
 import glob
 import json
-import time
 import re
 import sqlite3
 import logging
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 
 from src.config import DATA_DIR, LOGS_DIR
 from src.state.interfaces import IStateRepository
@@ -307,7 +305,11 @@ class MaintenanceAgent:
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
-        logger.info(f"MaintenanceAgent executing tool: {tool_name} with args {args}")
+        safe_args = {
+            k: ("[REDACTED]" if any(s in str(k).lower() for s in ("key", "token", "pass", "secret")) else v)
+            for k, v in args.items()
+        }
+        logger.info("MaintenanceAgent executing tool: %s with args %s", tool_name, safe_args)
         return self.registry.execute(tool_name, args)
 
     # ---------------------------------------------------------
@@ -376,6 +378,7 @@ class MaintenanceAgent:
             if isinstance(parsed, dict) and "action" in parsed:
                 return parsed
         except Exception:
+            # Fallback to regex pattern extraction if raw JSON parse fails
             pass
 
         # Try regex search for {"action": ...}
@@ -389,6 +392,7 @@ class MaintenanceAgent:
                 if isinstance(parsed, dict) and "action" in parsed:
                     return parsed
             except Exception:
+                # Candidate snippet is not valid JSON; continue to return None
                 pass
 
         return None

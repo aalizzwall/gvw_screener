@@ -1,6 +1,5 @@
 import logging
-import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from src.interfaces.data_provider import MarketDataProvider
 from src.interfaces.repository import DataRepository
 from src.analysis.engine import GVWEngine

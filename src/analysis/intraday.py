@@ -1,11 +1,9 @@
 import os
 import json
-import time
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 import pandas as pd
-import numpy as np
 
 from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
@@ -87,6 +85,7 @@ def run_intraday_monitoring(
             with open(SIGNAL_CACHE_FILE, 'r', encoding='utf-8') as f:
                 last_signals = json.load(f)
         except Exception:
+            # Ignore corrupted or unreadable signal cache
             pass
 
     current_signals = {}

@@ -58,6 +58,7 @@ def model_catalog() -> Dict[str, List[str]]:
                     if m not in catalog[prov]:
                         catalog[prov].append(m)
     except Exception:
+        # Ignore cache probe failure and return base catalog
         pass
     return catalog
 
@@ -161,6 +162,7 @@ class AIProviderPreferenceStore:
                 if isinstance(data, dict) and data.get("local_base_url"):
                     return str(data["local_base_url"]).strip()
         except (FileNotFoundError, ValueError):
+            # Fall back to environment variable or default when config file is missing or invalid
             pass
         return os.environ.get("LOCAL_AI_BASE_URL") or os.environ.get("LM_STUDIO_BASE_URL") or LOCAL_AI_BASE_URL
 
