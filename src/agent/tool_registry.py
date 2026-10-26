@@ -1,7 +1,8 @@
 import inspect
-import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
+
+from src.agent.shell_tools import redact_secrets
 
 logger = logging.getLogger("gvw.agent.tools")
 
@@ -128,8 +129,9 @@ class ToolRegistry:
 
             return tool.execute(**exec_kwargs)
         except Exception as e:
-            logger.warning(f"Error executing tool '{name}': {e}", exc_info=True)
-            return {"status": "error", "error": f"工具 '{name}' 執行失敗: {str(e)}"}
+            safe_err = redact_secrets(str(e))
+            logger.warning("Error executing tool: %s", safe_err, exc_info=True)
+            return {"status": "error", "error": f"工具 '{name}' 執行失敗: {safe_err}"}
 
     def generate_prompt_documentation(self) -> str:
         """Generates clear, concise tool documentation for the LLM system prompt."""

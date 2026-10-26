@@ -6,7 +6,9 @@ import time
 import shutil
 import logging
 import subprocess
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Union
+
+from src.agent.shell_tools import redact_secrets
 
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.analysis.model_prober import get_intra_provider_pool
@@ -187,6 +189,7 @@ class IssueSolver:
                     total_lines += added + deleted
                     file_count += 1
                 except ValueError:
+                    # Ignore non-numeric diff output lines
                     pass
 
         if file_count > MAX_FILES_CHANGED:
@@ -227,6 +230,7 @@ class IssueSolver:
                     with open(full_path, "r", encoding="utf-8") as f:
                         relevant[path] = f.read()
                 except Exception:
+                    # Ignore file read errors when gathering context
                     pass
 
         # If none found, provide basic hints
@@ -243,6 +247,7 @@ class IssueSolver:
                         with open(full_path, "r", encoding="utf-8") as f:
                             relevant[c] = f.read()
                     except Exception:
+                        # Ignore candidate file read errors
                         pass
         return relevant
 
@@ -320,8 +325,9 @@ class IssueSolver:
                     fpath = f["path"].strip().lstrip("/")
                     full_target = os.path.join(sandbox_path, fpath)
                     os.makedirs(os.path.dirname(full_target), exist_ok=True)
+                    code_content = redact_secrets(str(f.get("content", "")))
                     with open(full_target, "w", encoding="utf-8") as out:
-                        out.write(f["content"])
+                        out.write(code_content)  # lgtm [py/clear-text-storage-sensitive-data]
                     modified_files.append(fpath)
 
                 # Validate Diff & Anti-cheat
@@ -416,6 +422,7 @@ class IssueSolver:
                     cwd=self.repo_root,
                 )
             except Exception:
+                # Ignore worktree removal errors during sandbox cleanup
                 pass
             if os.path.exists(sandbox_path):
                 shutil.rmtree(sandbox_path, ignore_errors=True)

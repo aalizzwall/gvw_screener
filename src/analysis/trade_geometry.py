@@ -3,6 +3,7 @@
 Pure-Python on purpose (no pandas) so it is cheap and easy to unit test.
 Output is a deterministic reference plan, not investment advice.
 """
+import math
 from typing import Any, Dict, List, Optional
 
 MIN_BARS = 30
@@ -20,7 +21,7 @@ def _num(value: Any) -> Optional[float]:
         v = float(value)
     except (TypeError, ValueError):
         return None
-    return v if v == v else None
+    return v if math.isfinite(v) else None
 
 
 def normalize_bars(prices: Any) -> List[Dict[str, Any]]:
