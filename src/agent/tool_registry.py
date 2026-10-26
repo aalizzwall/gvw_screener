@@ -130,7 +130,7 @@ class ToolRegistry:
             return tool.execute(**exec_kwargs)
         except Exception as e:
             safe_err = redact_secrets(str(e))
-            logger.warning("Error executing tool '%s': %s", name, safe_err, exc_info=True)
+            logger.warning("Error executing tool: %s", safe_err, exc_info=True)
             return {"status": "error", "error": f"工具 '{name}' 執行失敗: {safe_err}"}
 
     def generate_prompt_documentation(self) -> str:

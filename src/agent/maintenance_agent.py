@@ -305,11 +305,7 @@ class MaintenanceAgent:
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
-        safe_args = {
-            k: ("[REDACTED]" if any(s in str(k).lower() for s in ("key", "token", "pass", "secret")) else v)
-            for k, v in args.items()
-        }
-        logger.info("MaintenanceAgent executing tool: %s with args %s", tool_name, safe_args)
+        logger.info("MaintenanceAgent executing tool")
         return self.registry.execute(tool_name, args)
 
     # ---------------------------------------------------------
