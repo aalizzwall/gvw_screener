@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ def calculate_quality_score(financials_data: Any) -> float:
         pass
     return 0.0
 
-def run_ranking(state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
+def run_ranking(state_manager: Optional[IStateRepository] = None) -> Dict[str, Any]:
     """
     Executes full screener rank analysis across all collected stocks.
     Saves and returns the ranking report.

@@ -161,7 +161,7 @@ class FinMindAdapter(DataProvider):
             if metric_type:
                 metrics[metric_type] = float(item.get("value", 0.0) or 0)
 
-        return {
+        res = {
             "revenue": metrics.get("Revenue", 0.0),
             "net_income": metrics.get(
                 "IncomeAfterTaxes",
@@ -172,6 +172,23 @@ class FinMindAdapter(DataProvider):
             "operating_expenses": metrics.get("OperatingExpenses", 0.0),
             "eps": metrics.get("EPS", 0.0),
         }
+
+        fs_date = next((item.get("date") for item in fs_data if item.get("date")), None)
+        if fs_date and len(str(fs_date)) >= 7:
+            try:
+                parts = str(fs_date)[:10].split("-")
+                yr = int(parts[0])
+                mo = int(parts[1])
+                q_num = (mo - 1) // 3 + 1
+                p_type = "單季" if q_num == 1 else "累計"
+                res["date"] = str(fs_date)
+                res["period"] = f"{yr}Q{q_num}"
+                res["period_type"] = p_type
+                res["period_label"] = f"{yr}Q{q_num} ({p_type})"
+            except (ValueError, TypeError):
+                pass
+
+        return res
 
     def _normalize_bs(self, bs_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not bs_data:

@@ -2,11 +2,12 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 import pandas as pd
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
-def check_kline_three_steps(ticker: str, state_manager: Optional[StateManager] = None) -> Optional[Dict[str, Any]]:
+def check_kline_three_steps(ticker: str, state_manager: Optional[IStateRepository] = None) -> Optional[Dict[str, Any]]:
     """
     Mathematically verify the K-line 3-step method:
     1. Volume Dry-up: Recent 5d avg vol <= 70% of 20d avg vol
@@ -64,7 +65,7 @@ def check_kline_three_steps(ticker: str, state_manager: Optional[StateManager] =
         logger.warning(f"Error checking K-line for {ticker}: {e}")
         return None
 
-def get_strong_buy_signals(state_manager: Optional[StateManager] = None) -> List[Dict[str, Any]]:
+def get_strong_buy_signals(state_manager: Optional[IStateRepository] = None) -> List[Dict[str, Any]]:
     """
     Scan high-score candidates (Score >= 0.95 in pullback zone) for K-line 3-step verification.
     """

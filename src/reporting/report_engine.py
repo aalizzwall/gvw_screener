@@ -2,12 +2,13 @@ import os
 import logging
 from typing import Dict, Any, Optional
 import pandas as pd
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.analysis.signals import get_strong_buy_signals
 
 logger = logging.getLogger(__name__)
 
-def get_suggested_price(ticker: str, state_manager: Optional[StateManager] = None) -> str:
+def get_suggested_price(ticker: str, state_manager: Optional[IStateRepository] = None) -> str:
     """Calculate suggested buy range based on MA20/MA50 from the stock's data."""
     state = state_manager or StateManager()
     data = state.get_stock_data(ticker)
@@ -33,7 +34,7 @@ def get_suggested_price(ticker: str, state_manager: Optional[StateManager] = Non
     except Exception:
         return "N/A"
 
-def get_financials(ticker: str, state_manager: Optional[StateManager] = None) -> Dict[str, Any]:
+def get_financials(ticker: str, state_manager: Optional[IStateRepository] = None) -> Dict[str, Any]:
     """Fetch financial indicators directly from the stock's state, falling back to ValuationService if missing."""
     state = state_manager or StateManager()
     data = state.get_stock_data(ticker)
@@ -72,7 +73,7 @@ def get_financials(ticker: str, state_manager: Optional[StateManager] = None) ->
         "is_loss": is_loss or (pb > 0 and pe <= 0),
     }
 
-def generate_daily_report(state_manager: Optional[StateManager] = None) -> str:
+def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> str:
     """Generate the full daily markdown/HTML report."""
     state = state_manager or StateManager()
 

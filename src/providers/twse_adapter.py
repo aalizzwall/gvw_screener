@@ -187,13 +187,35 @@ class TWSEAdapter(DataProvider):
             "operating_income": ("營業利益（損失）", "營業利益"),
             "eps": ("基本每股盈餘（元）", "每股盈餘"),
         }
-        return {
+        if not isinstance(pl_data, dict):
+            return {}
+
+        res = {
             target: self._number(next(
                 (pl_data[key] for key in aliases if pl_data.get(key) not in (None, "")),
                 0,
             ))
             for target, aliases in mapping.items()
-        } if isinstance(pl_data, dict) else {}
+        }
+
+        year_val = pl_data.get("年度") or pl_data.get("year")
+        quarter_val = pl_data.get("季別") or pl_data.get("quarter")
+        if year_val and quarter_val:
+            try:
+                yr = int(str(year_val).strip())
+                if yr < 1900:
+                    yr += 1911
+                q_num = int(str(quarter_val).strip().upper().replace("Q", ""))
+                p_type = "單季" if q_num == 1 else "累計"
+                res["year"] = yr
+                res["quarter"] = f"Q{q_num}"
+                res["period"] = f"{yr}Q{q_num}"
+                res["period_type"] = p_type
+                res["period_label"] = f"{yr}Q{q_num} ({p_type})"
+            except (ValueError, TypeError):
+                pass
+
+        return res
 
     def _normalize_bs(self, bs_data: Dict[str, Any]) -> Dict[str, Any]:
         mapping = {

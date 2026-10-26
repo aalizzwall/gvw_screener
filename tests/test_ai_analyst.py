@@ -438,6 +438,82 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 2)
         self.assertIn("models/gemini-2.5-flash:generateContent", mock_post.call_args_list[1].args[0])
 
+    def test_analysis_snapshot_contains_financial_period_labeling(self):
+        stock = self.state.get_stock_data("2330")
+        stock["financials"]["income_statement"]["year"] = 2024
+        stock["financials"]["income_statement"]["quarter"] = "Q3"
+        self.state.save_stock_data("2330", stock)
+
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "報告已生成"}}]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=response) as post:
+            analyze_stock("2330", self.state, api_key="test-key")
+
+        context = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("2024Q3 (累計)", context)
+        self.assertIn("financial_period", context)
+
+    def test_analysis_snapshot_computes_growth_metrics_when_history_present(self):
+        stock = self.state.get_stock_data("2330")
+        stock["financials"]["income_statement"] = {
+            "revenue": 1200, "net_income": 300, "eps": 6.0
+        }
+        stock["financials"]["history"] = [
+            {"revenue": 800, "net_income": 180, "eps": 3.6},   # -5 (same q prev yr)
+            {"revenue": 900, "net_income": 200, "eps": 4.0},   # -4
+            {"revenue": 950, "net_income": 210, "eps": 4.2},   # -3
+            {"revenue": 1000, "net_income": 240, "eps": 4.8},  # -2 (prev q)
+            {"revenue": 1200, "net_income": 300, "eps": 6.0},  # current
+        ]
+        self.state.save_stock_data("2330", stock)
+
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "成長分析"}}]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=response) as post:
+            analyze_stock("2330", self.state, api_key="test-key")
+
+        context = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("growth_analysis", context)
+        self.assertIn("+20.00%", context)  # QoQ: (1200-1000)/1000 = +20%
+        self.assertIn("+50.00%", context)  # YoY: (1200-800)/800 = +50%
+
+    def test_analysis_snapshot_enriches_peer_comparison_and_macro_context(self):
+        # Peer stock in same industry "半導體"
+        self.state.save_stock_data("2454", {
+            "ticker": "2454",
+            "name": "聯發科",
+            "basic_info": {"industry": "半導體", "pe": 25, "pb": 6, "yield": 4.5},
+            "financials": {"income_statement": {"revenue": 500}},
+            "prices": [{"date": "2026-10-20", "close": 1200, "volume": 500}],
+        })
+        self.state.save_ranks({"data": [
+            {"ticker": "2330", "final_score": 0.92},
+            {"ticker": "2454", "final_score": 0.85},
+        ]})
+        self.state.save_market_index({
+            "index_ticker": "TAIEX",
+            "price": 23500,
+            "change": "+150",
+            "date": "2026-10-20",
+        })
+
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "同業與總經交叉分析"}}]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=response) as post:
+            analyze_stock("2330", self.state, api_key="test-key")
+
+        context = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("peer_comparison", context)
+        self.assertIn("macro_context", context)
+        self.assertIn("TAIEX", context)
+        self.assertIn("23500", context)
+
 
 class TestAIProviderPreferenceStore(unittest.TestCase):
 

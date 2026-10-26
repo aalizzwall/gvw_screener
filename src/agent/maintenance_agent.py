@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, List, Optional, Union
 
 from src.config import DATA_DIR, LOGS_DIR
+from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.diagnostics.doctor import GVWDoctor
@@ -41,7 +42,7 @@ class MaintenanceAgent:
 
     def __init__(
         self,
-        state_manager: Optional[StateManager] = None,
+        state_manager: Optional[IStateRepository] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
         doctor: Optional[GVWDoctor] = None,
         scheduler: Optional[Any] = None,
