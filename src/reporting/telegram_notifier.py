@@ -36,3 +36,29 @@ def send_telegram_message(
         logger.error(f"Telegram API Error: {e}")
         return False
 
+
+def send_telegram_photo(
+    photo: bytes,
+    caption: str = "",
+    bot_token: Optional[str] = None,
+    chat_id: Optional[str] = None,
+) -> bool:
+    """Send a PNG image (bytes) to a Telegram chat."""
+    token = bot_token or TELEGRAM_BOT_TOKEN
+    target_chat = chat_id or TELEGRAM_HOME_CHANNEL
+    if not token or not target_chat or not photo:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    try:
+        response = requests.post(
+            url,
+            data={"chat_id": target_chat, "caption": caption[:1000], "parse_mode": "HTML"},
+            files={"photo": ("chart.png", photo, "image/png")},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Telegram sendPhoto Error: {e}")
+        return False
+

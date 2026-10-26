@@ -166,6 +166,41 @@ class TelegramBotHandler:
             logger.error(f"Error sending telegram message: {e}")
             return False
 
+    def send_photo(
+        self,
+        chat_id: Union[int, str],
+        photo: bytes,
+        caption: str = "",
+    ) -> bool:
+        if not self.token or not photo:
+            return False
+        url = f"https://api.telegram.org/bot{self.token}/sendPhoto"
+        try:
+            r = requests.post(
+                url,
+                data={"chat_id": chat_id, "caption": caption[:1000], "parse_mode": "HTML"},
+                files={"photo": ("chart.png", photo, "image/png")},
+                timeout=30,
+            )
+            return r.status_code == 200
+        except Exception as e:
+            logger.error(f"Error sending telegram photo: {e}")
+            return False
+
+    def _send_trade_chart(self, chat_id: Union[int, str], ticker: str, name: str, stock_data: Any):
+        """Best-effort: never let chart failures break the text reply."""
+        try:
+            from src.reporting.chart_generator import render_trade_chart
+            prices = stock_data.get("prices", []) if isinstance(stock_data, dict) else []
+            png = render_trade_chart(ticker, name, prices)
+            if png:
+                self.send_photo(
+                    chat_id, png,
+                    f"{html.escape(str(name))} ({ticker}) 買賣情境圖\n僅供參考，非投資建議。",
+                )
+        except Exception as exc:
+            logger.warning("Trade chart failed for %s: %s", ticker, exc)
+
     def _keyboard_for_chat(
         self,
         chat_id: Union[int, str],
@@ -1034,6 +1069,8 @@ class TelegramBotHandler:
             f"• <b>股價淨值比 (P/B)</b>：<code>{fin.get('pb', 0)}</code>",
             f"• <b>股利殖利率</b>：<code>{fin.get('yield', 0)}%</code>\n",
         ]
+
+        self._send_trade_chart(chat_id, ticker, name, stock_data)
 
         can_analyze = self._can_analyze(user_id or chat_id)
         if can_analyze:
