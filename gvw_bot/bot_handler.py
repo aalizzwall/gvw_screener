@@ -7,7 +7,7 @@ import logging
 import html
 import subprocess
 import threading
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 import requests
 
 # Ensure parent directory is in sys.path
@@ -23,7 +23,14 @@ from src.config import (
 )
 from src.analysis.ai_analyst import analyze_stock, check_providers, _provider_key
 from src.state.ai_access import AIAnalysisAccessStore
-from src.state.ai_provider import AIProviderPreferenceStore, model_catalog, AI_CHAIN_PRESETS
+from src.state.ai_provider import (
+    AIProviderPreferenceStore,
+    model_catalog,
+    AI_CHAIN_PRESETS,
+    AI_POLICIES,
+    build_strength_fallback_chain,
+    parse_entry,
+)
 from src.reporting.report_engine import generate_daily_report, get_financials, get_suggested_price
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
@@ -44,6 +51,7 @@ BOT_COMMANDS = [
     {"command": "collect", "description": "手動採集股票資料"},
     {"command": "rank", "description": "重新計算股票排名"},
     {"command": "jobs", "description": "查看排程任務"},
+    {"command": "ai", "description": "AI 智慧控制中心（自動強度階梯與健康檢測）"},
     {"command": "analyze", "description": "使用 AI 評估個股，例如 /analyze 2330"},
     {"command": "request_ai", "description": "申請使用 AI 個股分析"},
     {"command": "ai_requests", "description": "審核 AI 分析使用申請"},
@@ -313,7 +321,7 @@ class TelegramBotHandler:
         owner_only_commands = {
             "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
-            "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
+            "/ai", "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
             "/ai_local", "/update", "/doctor", "/fix", "/maintain", "/audit", "/check_github",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
@@ -437,6 +445,49 @@ class TelegramBotHandler:
                 return
             for request in requests_list:
                 self._notify_owner_of_request(request)
+
+        elif cmd in {"/ai", "/ai_control", "/ai_dashboard"}:
+            args = text.split()[1:]
+            if not args or args[0].lower() in {"status", "info", "dashboard"}:
+                text_out, buttons = self._render_ai_dashboard()
+                self.send_message(
+                    chat_id,
+                    text_out,
+                    reply_markup={"inline_keyboard": buttons},
+                    user_id=user_id,
+                )
+            elif args[0].lower() in AI_POLICIES:
+                policy = args[0].lower()
+                self.ai_provider_store.set_policy(policy)
+                policy_title = AI_POLICIES[policy]["title"]
+                text_out, buttons = self._render_ai_dashboard()
+                self.send_message(
+                    chat_id,
+                    f"✅ <b>已套用策略：{policy_title}</b>\n\n{text_out}",
+                    reply_markup={"inline_keyboard": buttons},
+                    user_id=user_id,
+                )
+            elif args[0].lower() == "check":
+                self.send_message(chat_id, "🩺 正在檢測 AI 模型可用性，請稍候...")
+                self.send_message(chat_id, self._run_ai_check())
+            elif args[0].lower() == "models":
+                self._render_ai_models(chat_id)
+            elif args[0].lower() == "local":
+                if len(args) > 1:
+                    new_url = self.ai_provider_store.set_local_base_url(args[1])
+                    self.send_message(chat_id, f"✅ 地端 LM-Studio 端點已更新為：<code>{html.escape(new_url)}</code>")
+                else:
+                    self.handle_command(chat_id, "/ai_local", "/ai_local", user_id=user_id)
+            elif args[0].lower() == "set":
+                self.send_message(chat_id, self._update_ai_chain("/ai_set", args[1:]))
+            else:
+                text_out, buttons = self._render_ai_dashboard()
+                self.send_message(
+                    chat_id,
+                    text_out,
+                    reply_markup={"inline_keyboard": buttons},
+                    user_id=user_id,
+                )
 
         elif cmd == "/ai_status":
             self.send_message(chat_id, self._ai_status_text())
@@ -689,6 +740,59 @@ class TelegramBotHandler:
 
         reply_markup = {"inline_keyboard": all_buttons} if all_buttons else None
         self.send_message(chat_id, "\n".join(lines), reply_markup=reply_markup)
+
+    def _render_ai_dashboard(self) -> Tuple[str, List[List[Dict[str, str]]]]:
+        chain = self.ai_provider_store.get_chain()
+        policy = self.ai_provider_store.get_policy()
+        policy_meta = AI_POLICIES.get(
+            policy,
+            {"title": "🛠️ 自訂備援順序", "description": "手動設定備援順序 (/ai_set)"},
+        )
+        local_url = self.ai_provider_store.get_local_base_url()
+
+        lines = [
+            "🎛️ <b>【GVW AI 智慧控制中心】</b>",
+            f"• <b>當前策略</b>：{policy_meta['title']}",
+            f"• <i>{policy_meta['description']}</i>\n",
+            "📡 <b>Provider 配置狀態：</b>",
+        ]
+
+        gemini_key = _provider_key("gemma")
+        oa_key = _provider_key("openai")
+
+        lines.append(f"• 🌐 <b>Google Gemini</b>：{'✅ API Key 已配置' if gemini_key else '⚠️ 未設定 GEMINI_API_KEY'}")
+        lines.append(f"• ⚡ <b>OpenAI</b>：{'✅ API Key 已配置' if oa_key else '⚠️ 未設定 OPENAI_API_KEY'}")
+        lines.append(f"• 🏠 <b>Local (LM-Studio)</b>：<code>{html.escape(local_url or '未設定')}</code>\n")
+
+        lines.append("🪜 <b>目前生效備援梯隊（依模型強度自動排序，地端保底）：</b>")
+        for idx, entry in enumerate(chain, start=1):
+            prov, model = parse_entry(entry)
+            icon = "🌐" if prov == "gemma" else ("⚡" if prov == "openai" else "🏠")
+            if idx == 1:
+                role = "主力"
+            elif idx == len(chain):
+                role = "地端終極保底" if prov == "local" else f"備援 {idx-1}"
+            else:
+                role = f"備援 {idx-1}"
+            lines.append(f"{idx}. {icon} <code>{html.escape(entry)}</code> ({role})")
+
+        lines.append("\n💡 <i>點擊下方按鈕可一鍵切換策略，系統自動依最新模型強度重排最佳梯隊，無需手動打指令。</i>")
+
+        buttons = [
+            [
+                {"text": "⚡ 自動強度階梯 (推薦)", "callback_data": "ai_policy:auto"},
+                {"text": "🌐 Gemini 優先", "callback_data": "ai_policy:gemini"},
+            ],
+            [
+                {"text": "⚡ OpenAI 優先", "callback_data": "ai_policy:openai"},
+                {"text": "🏠 地端 Active 優先", "callback_data": "ai_policy:local"},
+            ],
+            [
+                {"text": "🩺 立即連線健康檢測", "callback_data": "ai_check:run"},
+                {"text": "🔄 刷新控制面板", "callback_data": "ai_policy:refresh"},
+            ],
+        ]
+        return "\n".join(lines), buttons
 
     def _ai_status_text(self) -> str:
         lines = ["🤖 <b>AI provider/model 順序</b>"]
@@ -1065,6 +1169,38 @@ class TelegramBotHandler:
         # 2. Owner-only admin callbacks
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
+            return
+
+        if data.startswith("ai_policy:"):
+            policy_key = data[len("ai_policy:"):]
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            if policy_key == "refresh":
+                self._answer_callback_query(callback_id, "已刷新控制中心。")
+                text_out, buttons = self._render_ai_dashboard()
+                self.send_message(chat_id, text_out, reply_markup={"inline_keyboard": buttons})
+                return
+            if policy_key not in AI_POLICIES:
+                self._answer_callback_query(callback_id, "未知的策略。")
+                return
+            try:
+                self.ai_provider_store.set_policy(policy_key)
+                meta = AI_POLICIES[policy_key]
+                self._answer_callback_query(callback_id, f"已套用：{meta['title']}")
+                text_out, buttons = self._render_ai_dashboard()
+                self.send_message(
+                    chat_id,
+                    f"✅ <b>已套用策略：{html.escape(meta['title'])}</b>\n\n{text_out}",
+                    reply_markup={"inline_keyboard": buttons},
+                )
+            except Exception as e:
+                self._answer_callback_query(callback_id, f"切換失敗: {e}")
+            return
+
+        if data == "ai_check:run":
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "正在進行健康檢測...")
+            self.send_message(chat_id, "🩺 正在檢測 AI 模型可用性，請稍候...")
+            self.send_message(chat_id, self._run_ai_check())
             return
 
         if data.startswith("ai_preset:"):

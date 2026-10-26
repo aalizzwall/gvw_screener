@@ -69,6 +69,86 @@ def model_catalog() -> Dict[str, List[str]]:
     return catalog
 
 
+AI_POLICIES: Dict[str, Dict[str, Any]] = {
+    "auto": {
+        "title": "⚡ 自動強度階梯",
+        "description": "跨雲綜合強度階梯優先，地端本機保底（推薦高可用/全自動）",
+    },
+    "gemini": {
+        "title": "🌐 Gemini 優先階梯",
+        "description": "Google Gemini 輕量至旗艦優先，OpenAI 備援，地端本機保底",
+    },
+    "openai": {
+        "title": "⚡ OpenAI 優先階梯",
+        "description": "OpenAI 輕量至旗艦優先，Gemini 備援，地端本機保底",
+    },
+    "local": {
+        "title": "🏠 地端 Active 優先",
+        "description": "本機 LM-Studio 優先，雲端 Flash 速援，地端本機保底",
+    },
+}
+
+
+def build_strength_fallback_chain(policy: str = "auto") -> List[str]:
+    """
+    Build an ordered fallback chain based on model strength and latency tiers across providers.
+    Ensures local/active is ALWAYS guaranteed at the tail end as the ultimate safety net.
+    """
+    p = str(policy or "auto").strip().lower()
+    chain: List[str] = []
+
+    if p in ("gemini", "gemini_first"):
+        chain.extend([
+            "gemma/gemini-3.5-flash-lite",
+            "gemma/gemini-3.1-flash-lite",
+            "gemma/gemini-2.5-flash-lite",
+            "gemma/gemini-3.5-flash",
+            "gemma/gemini-2.5-flash",
+            "openai/gpt-4o-mini",
+            "local/active",
+        ])
+    elif p in ("openai", "openai_first"):
+        chain.extend([
+            "openai/gpt-4o-mini",
+            "openai/gpt-4o",
+            "gemma/gemini-3.5-flash-lite",
+            "gemma/gemini-2.5-flash-lite",
+            "local/active",
+        ])
+    elif p in ("local", "local_first"):
+        chain.extend([
+            "local/active",
+            "gemma/gemini-3.5-flash-lite",
+            "openai/gpt-4o-mini",
+            "local/active",
+        ])
+    else:
+        # Default "auto": Gemini Lite speed ladder -> Flash accuracy -> OpenAI cross-cloud -> Local
+        chain.extend([
+            "gemma/gemini-3.5-flash-lite",
+            "gemma/gemini-3.1-flash-lite",
+            "gemma/gemini-2.5-flash-lite",
+            "gemma/gemini-3.5-flash",
+            "openai/gpt-4o-mini",
+            "local/active",
+        ])
+
+    # De-duplicate while preserving order
+    deduped: List[str] = []
+    for entry in chain:
+        if entry not in deduped:
+            deduped.append(entry)
+
+    # Guarantee local/active is ALWAYS at the tail end (地端保底)
+    if "local/active" not in deduped:
+        deduped.append("local/active")
+    elif deduped[-1] != "local/active" and p not in ("local", "local_first"):
+        deduped.remove("local/active")
+        deduped.append("local/active")
+
+    return deduped
+
+
 AI_CHAIN_PRESETS: Dict[str, Dict[str, Any]] = {
     "lite_ladder": {
         "title": "⚡ Gemini Lite 梯隊備援鏈",
@@ -127,6 +207,28 @@ class AIProviderPreferenceStore:
     def __init__(self, path: str = AI_PROVIDER_FILE):
         self.path = path
 
+    def get_policy(self) -> str:
+        try:
+            with open(self.path, "r", encoding="utf-8") as state_file:
+                data = json.load(state_file)
+                if isinstance(data, dict):
+                    policy = data.get("policy")
+                    if policy in AI_POLICIES:
+                        return policy
+                    if data.get("chain"):
+                        return "custom"
+        except (FileNotFoundError, ValueError):
+            pass
+        return "auto"
+
+    def set_policy(self, policy: str) -> List[str]:
+        p = str(policy).strip().lower()
+        if p not in AI_POLICIES:
+            raise ValueError(f"不支援的策略：{policy}，可用策略：{', '.join(AI_POLICIES.keys())}")
+        chain = build_strength_fallback_chain(p)
+        self._save({"policy": p, "chain": chain})
+        return chain
+
     def get_chain(self) -> List[str]:
         try:
             with open(self.path, "r", encoding="utf-8") as state_file:
@@ -135,6 +237,10 @@ class AIProviderPreferenceStore:
             return default_chain()
         if not isinstance(data, dict):
             return default_chain()
+
+        policy = data.get("policy")
+        if policy in AI_POLICIES:
+            return build_strength_fallback_chain(policy)
 
         chain = data.get("chain")
         if isinstance(chain, list):
@@ -164,7 +270,7 @@ class AIProviderPreferenceStore:
                 normalized.append(item)
         if not normalized:
             raise ValueError("至少需要一個 provider/model。")
-        self._save({"chain": normalized})
+        self._save({"policy": "custom", "chain": normalized})
         return normalized
 
     def add(self, entry: str, position: Optional[int] = None) -> List[str]:
