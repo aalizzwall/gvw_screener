@@ -14,6 +14,7 @@ from src.state.ai_provider import AIProviderPreferenceStore
 from src.diagnostics.doctor import GVWDoctor
 from src.agent.tool_registry import ToolRegistry
 from src.agent.session_context import SessionContext
+from src.agent.shell_tools import ShellToolkit
 from src.analysis.model_prober import get_intra_provider_pool
 from src.analysis.ai_analyst import (
     _PROVIDERS,
@@ -23,6 +24,9 @@ from src.analysis.ai_analyst import (
 )
 
 logger = logging.getLogger("gvw.agent.maintenance")
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+MAX_TURNS = 12
 
 
 class MaintenanceAgent:
@@ -56,6 +60,7 @@ class MaintenanceAgent:
         self.data_dir = data_dir
 
         self.sessions: Dict[str, SessionContext] = {}
+        self.shell = ShellToolkit(cwd=PROJECT_ROOT)
         self.registry = ToolRegistry()
         self._register_default_tools()
 
@@ -107,6 +112,49 @@ class MaintenanceAgent:
             description="查看當前 AI 模型優先鏈、主力模型、本地 LM-Studio/Ollama 端點及健康配置。",
             handler=self.tool_inspect_ai_config,
             parameters={},
+        )
+
+        # Pi-style core primitives: full access to the host to investigate and fix issues.
+        self.registry.register_tool(
+            name="bash",
+            description=(
+                "在這台主機上執行任意 bash 指令 (systemctl、journalctl、df、free、ps、curl、sqlite3、git、pip 等)，"
+                "回傳 stdout/stderr/exit_code。無互動式輸入，預設逾時 60 秒；高風險破壞性指令會被拒絕。"
+            ),
+            handler=self.shell.bash,
+            parameters={
+                "command": {"type": "string", "description": "要執行的 bash 指令", "required": True},
+                "timeout": {"type": "integer", "description": "逾時秒數 (最大 180)", "required": False, "default": 60},
+            },
+        )
+        self.registry.register_tool(
+            name="read_file",
+            description="讀取任意檔案 (日誌、設定、原始碼)，回傳含行號內容，可用 offset/limit 分段。機敏欄位會自動遮蔽。",
+            handler=self.shell.read_file,
+            parameters={
+                "path": {"type": "string", "description": "檔案路徑 (絕對或相對專案根目錄)", "required": True},
+                "offset": {"type": "integer", "description": "起始行號 (從 1 起)", "required": False, "default": 1},
+                "limit": {"type": "integer", "description": "最多讀取行數", "required": False, "default": 400},
+            },
+        )
+        self.registry.register_tool(
+            name="write_file",
+            description="建立或覆寫檔案 (例如修復腳本、設定檔)。不可寫入 .env、SSH 金鑰與 .git 內部檔案。",
+            handler=self.shell.write_file,
+            parameters={
+                "path": {"type": "string", "description": "檔案路徑", "required": True},
+                "content": {"type": "string", "description": "完整檔案內容", "required": True},
+            },
+        )
+        self.registry.register_tool(
+            name="edit_file",
+            description="精準替換檔案中唯一出現的一段文字。修改前務必先 read_file 確認原文。",
+            handler=self.shell.edit_file,
+            parameters={
+                "path": {"type": "string", "description": "檔案路徑", "required": True},
+                "old_text": {"type": "string", "description": "要被取代的原文 (必須唯一)", "required": True},
+                "new_text": {"type": "string", "description": "取代後的新文字", "required": True},
+            },
         )
 
     # ---------------------------------------------------------
@@ -359,9 +407,15 @@ class MaintenanceAgent:
 
         tools_doc = self.registry.generate_prompt_documentation()
         system_prompt = (
-            "你是 GVW 智能選股系統的首席維護與資料庫診斷專家 (Maintenance Copilot)。\n"
-            "你的任務是協助系統負責人排查資料缺失、排程異常或管線問題。\n"
-            "請基於真實資料說話，不可憑空猜測。必須使用工具查證系統與資料庫現況後再做結論。\n\n"
+            "你是 GVW 智能選股系統所在這台主機 (Raspberry Pi) 的系統管理員 (Maintenance Copilot)。\n"
+            f"專案目錄：{PROJECT_ROOT}；服務為 systemd user service `gvw_bot`。\n"
+            "你的任務是自主找出並解決資料缺失、排程異常、服務故障、網路或環境問題。\n"
+            "你擁有 bash / read_file / write_file / edit_file，可自由探索整台主機。\n"
+            "原則：\n"
+            "1. 先用唯讀指令查證 (journalctl、systemctl status、df、free、ps、curl、sqlite3、git log)，不可憑空猜測。\n"
+            "2. 修改檔案或重啟服務前，先說明原因；修改前必須 read_file 確認原文。\n"
+            "3. 不做破壞性操作 (刪除資料、格式化、關機)，不讀取或洩漏金鑰；修改程式碼請盡量小幅並說明如何還原。\n"
+            "4. 最終回報須包含：根因、你做了什麼、目前狀態、建議後續。\n\n"
             + tools_doc
             + "\n\n"
             "【Action 協議規範】\n"
@@ -377,7 +431,7 @@ class MaintenanceAgent:
             "}"
         )
 
-        max_turns = 5
+        max_turns = MAX_TURNS
         for turn in range(max_turns):
             logger.info(f"MaintenanceAgent turn {turn + 1}/{max_turns}...")
             messages = session.get_messages(system_prompt)
@@ -407,6 +461,6 @@ class MaintenanceAgent:
             session.add_assistant_message(json.dumps(action_dict, ensure_ascii=False))
             session.add_observation(action, tool_res)
 
-        warning_msg = "⚠️ 已達到最大工具調用深度（5 回合），未能完全收斂診斷，請嘗試進一步縮小問題範圍或重置對話。"
+        warning_msg = f"⚠️ 已達到最大工具調用深度（{MAX_TURNS} 回合），未能完全收斂診斷，請嘗試進一步縮小問題範圍或重置對話。"
         session.add_assistant_message(warning_msg)
         return warning_msg

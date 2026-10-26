@@ -133,7 +133,7 @@ class ToolRegistry:
 
     def generate_prompt_documentation(self) -> str:
         """Generates clear, concise tool documentation for the LLM system prompt."""
-        lines = ["你可以調用以下安全唯讀的診斷工具來檢視底層真實數據與日誌："]
+        lines = ["你可以調用以下工具："]
         for idx, tool in enumerate(self._tools.values(), start=1):
             param_str = ", ".join([f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.items()])
             lines.append(f"{idx}. {tool.name}({param_str}) -> {tool.description}")
