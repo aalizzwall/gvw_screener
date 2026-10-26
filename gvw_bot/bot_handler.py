@@ -562,10 +562,10 @@ class TelegramBotHandler:
                         buttons.append([{"text": f"🌐 切換至 gemma/{m}", "callback_data": f"ai_select:gemma/{m}"}])
             else:
                 lines.append(f"• 狀態：{detail}")
-                lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+                lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:25])
         else:
             lines.append("• 狀態：未設定 GEMINI_API_KEY")
-            lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+            lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:25])
 
         # 3. OpenAI models
         lines.append("\n⚡ <b>OpenAI</b>")

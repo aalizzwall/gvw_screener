@@ -117,12 +117,7 @@ def parse_entry(entry: str) -> Tuple[str, str]:
     if not sep or provider not in PROVIDER_NAMES:
         raise ValueError(f"格式應為 provider/model，provider 僅支援：{', '.join(PROVIDER_NAMES)}")
     if provider != "local" and model not in model_catalog()[provider]:
-        is_known_prefix = (
-            (provider == "gemma" and (model.startswith("gemini-") or model.startswith("gemma-")))
-            or (provider == "openai" and (model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3") or model.startswith("chatgpt-")))
-        )
-        if not is_known_prefix:
-            raise ValueError(f"{provider} 不支援 model：{model}（可用 /ai_models 查看）")
+        raise ValueError(f"{provider} 不支援 model：{model}（可用 /ai_models 查看）")
     return provider, model
 
 
