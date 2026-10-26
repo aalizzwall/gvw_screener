@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from src.interfaces.data_provider import MarketDataProvider
 from src.interfaces.repository import DataRepository
 from src.analysis.engine import GVWEngine
@@ -13,15 +13,15 @@ class Orchestrator:
         self, 
         data_provider: MarketDataProvider, 
         engine: GVWEngine,
-        repository: DataRepository = None,
-        logger: logging.Logger = None
+        repository: Optional[DataRepository] = None,
+        logger: Optional[logging.Logger] = None
     ):
         self.logger = logger or logging.getLogger(__name__)
         self.data_provider = data_provider
         self.engine = engine
         self.repository = repository
 
-    async def run(self, symbols: List[str]):
+    async def run(self, symbols: List[str]) -> None:
         """
         Starts the data stream from the Adapter and pipes it into the GVW Engine.
         """
@@ -45,7 +45,7 @@ class Orchestrator:
             self.logger.error(f"Error in orchestration pipeline: {e}")
             raise
 
-    async def close(self):
+    async def close(self) -> None:
         """
         Cleanup resources.
         """
@@ -54,4 +54,3 @@ class Orchestrator:
         if self.repository and hasattr(self.repository, 'close'):
             await self.repository.close()
         self.logger.info("Orchestrator shut down.")
-

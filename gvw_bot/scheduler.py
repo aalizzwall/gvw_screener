@@ -4,7 +4,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional, Tuple
 
 # Ensure parent directory is in path so we can import src.*
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,7 +31,7 @@ class ScheduledJob:
         interval_minutes: Optional[int] = None,
         daily_time: Optional[str] = None,  # "HH:MM"
         weekdays_only: bool = True,
-        active_hours: Optional[tuple] = None, # (start_hour, end_hour)
+        active_hours: Optional[Tuple[float, float]] = None, # (start_hour, end_hour)
         grace_minutes: int = 30
     ):
         self.name = name
@@ -94,7 +94,7 @@ class GVWScheduler:
         self.jobs: List[ScheduledJob] = []
         self._setup_jobs()
 
-    def _setup_jobs(self):
+    def _setup_jobs(self) -> None:
         # 1. Intraday monitoring: Weekdays 09:00 - 13:30, every 10 minutes
         self.jobs.append(ScheduledJob(
             name="intraday_monitor",
@@ -153,7 +153,7 @@ class GVWScheduler:
 
     # --- Job Implementations ---
 
-    def job_intraday_monitor(self):
+    def job_intraday_monitor(self) -> None:
         logger.info("[JOB] Running Intraday Monitor...")
         alerts = run_intraday_monitoring()
         if alerts:
@@ -163,18 +163,18 @@ class GVWScheduler:
                     send_telegram_message(alert, chat_id=chat_id)
         self.hb.update_job_status("intraday_monitor", "ok", message=f"Generated {len(alerts)} alerts")
 
-    def job_daily_collection(self):
+    def job_daily_collection(self) -> None:
         logger.info("[JOB] Running Daily Post-Market Collection...")
         stats = self.orchestrator.run_collection_cycle(batch_ratio=1.0, force=False)
         self.hb.update_job_status("daily_collection", "ok", message=f"Fetched: {stats}")
 
-    def job_daily_ranking(self):
+    def job_daily_ranking(self) -> None:
         logger.info("[JOB] Running Daily Screener Ranking...")
         result = run_ranking()
         count = len(result.get("data", []))
         self.hb.update_job_status("daily_ranking", "ok", message=f"Ranked {count} stocks")
 
-    def job_daily_report(self):
+    def job_daily_report(self) -> None:
         logger.info("[JOB] Generating and sending Post-Market Daily Report...")
         report_text = generate_daily_report()
         sent = False
@@ -186,7 +186,7 @@ class GVWScheduler:
                 sent = True
         self.hb.update_job_status("daily_report", "ok" if sent else "warning", message="Sent to Telegram" if sent else "Failed/Not configured")
 
-    def job_morning_briefing(self):
+    def job_morning_briefing(self) -> None:
         logger.info("[JOB] Generating Pre-Market Morning Briefing...")
         report_text = generate_daily_report()
         briefing = "🌅 <b>【GVW 晨間選股速報】</b>\n" + report_text
@@ -199,14 +199,14 @@ class GVWScheduler:
                 sent = True
         self.hb.update_job_status("morning_briefing", "ok" if sent else "warning")
 
-    def job_periodic_sync(self):
+    def job_periodic_sync(self) -> None:
         logger.info("[JOB] Running Periodic Oldest-First Sync (10% batch)...")
         stats = self.orchestrator.run_collection_cycle(batch_ratio=0.1, force=False)
         self.hb.update_job_status("periodic_sync", "ok", message=f"Sync stats: {stats}")
 
     # --- Scheduler Execution and Loop ---
 
-    def _execute_job(self, job: ScheduledJob):
+    def _execute_job(self, job: ScheduledJob) -> None:
         logger.info(f"Started scheduled job: {job.name}")
         try:
             job.func()
@@ -238,7 +238,7 @@ class GVWScheduler:
             self.hb.update_job_status(job.name, "error", message=str(e))
             return False
 
-    def start(self):
+    def start(self) -> None:
         if self.running:
             return
         self.running = True
@@ -246,13 +246,13 @@ class GVWScheduler:
         self._thread.start()
         logger.info("GVW Background Scheduler started successfully.")
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         logger.info("GVW Background Scheduler stopped.")
 
-    def _run_loop(self):
+    def _run_loop(self) -> None:
         last_hb_time = 0.0
         while self.running:
             now = datetime.now()
