@@ -236,7 +236,7 @@ class TelegramBotHandler:
             "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
-            "/ai_local", "/update", "/doctor", "/fix", "/maintain",
+            "/ai_local", "/update", "/doctor", "/fix", "/maintain", "/audit", "/check_github",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。", user_id=user_id)
@@ -440,6 +440,15 @@ class TelegramBotHandler:
             else:
                 issue_id = args[0]
                 self._trigger_issue_solver(chat_id, issue_id)
+
+        elif cmd in ["/audit", "/check_github"]:
+            self.send_message(chat_id, "🔍 正在執行 GitHub 與系統全面巡檢，請稍候...")
+            threading.Thread(
+                target=self._execute_github_audit,
+                args=(chat_id,),
+                daemon=True,
+                name="GVWAuditThread",
+            ).start()
 
         elif cmd == "/maintain":
             if chat_id in self.maintenance_mode_chats:
@@ -759,6 +768,44 @@ class TelegramBotHandler:
             self.send_message(chat_id, f"❌ 更新程序異常：<code>{html.escape(str(e))}</code>")
         finally:
             self._updating = False
+
+    def _execute_github_audit(self, chat_id: Union[int, str]) -> None:
+        """Runs full GitHub audit on-demand and reports results to Telegram."""
+        from src.diagnostics.github_auditor import GitHubAuditor
+
+        auditor = GitHubAuditor()
+        try:
+            result = auditor.run_full_audit()
+            summary = result.get("summary", {})
+            alerts_count = summary.get("alerts_count", 0)
+            failures_count = summary.get("failures_count", 0)
+            issues_count = summary.get("open_issues_count", 0)
+
+            if result.get("has_problems"):
+                created, issue_url = auditor.create_or_update_weekly_issue(result)
+                action_text = "已建立新 Issue" if created else "已更新既有 Issue"
+                msg = (
+                    "⚠️ <b>【GitHub 系統巡檢完成】</b>\n"
+                    f"發現異常項目（{action_text}）：\n"
+                    f"• 🛡️ CodeQL 弱點警報: <b>{alerts_count}</b> 項\n"
+                    f"• ❌ 過去 7 天 CI 失敗: <b>{failures_count}</b> 次\n"
+                    f"• 📌 既有待跟進 Issue: <b>{issues_count}</b> 項\n\n"
+                    f"🔗 <b>GitHub Issue 追蹤連結：</b>\n"
+                    f"{issue_url}"
+                )
+            else:
+                msg = (
+                    "✅ <b>【GitHub 系統巡檢完成】</b>\n"
+                    "專案健康狀態優良，未發現任何異常：\n"
+                    f"• 🛡️ CodeQL 弱點警報: 0 項\n"
+                    f"• ⚙️ CI/CD 執行狀態: 全部正常 (0 失敗)\n"
+                    f"• 📌 待處理 Issue 追蹤: {issues_count} 項\n\n"
+                    "無需建立 GitHub Issue。"
+                )
+            self.send_message(chat_id, msg)
+        except Exception as e:
+            logger.error(f"Error during manual GitHub audit: {e}", exc_info=True)
+            self.send_message(chat_id, f"❌ 巡檢執行失敗：{html.escape(str(e))}")
 
     def _trigger_issue_solver(self, chat_id: Union[int, str], issue_id: str):
         """Dispatches IssueSolver in a daemon thread and sends updates to Telegram."""

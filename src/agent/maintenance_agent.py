@@ -112,6 +112,12 @@ class MaintenanceAgent:
             handler=self.tool_inspect_ai_config,
             parameters={},
         )
+        self.registry.register_tool(
+            name="inspect_github_health",
+            description="執行 GitHub 倉庫健康巡檢，檢查 CodeQL 弱點掃描警報、CI/CD 失敗紀錄與待追蹤 Issues。",
+            handler=self.tool_inspect_github_health,
+            parameters={},
+        )
 
         # Pi-style core primitives: full access to the host to investigate and fix issues.
         self.registry.register_tool(
@@ -302,6 +308,12 @@ class MaintenanceAgent:
             "local_base_url": local_url,
             "configured_providers": list(_PROVIDERS.keys()),
         }
+
+    def tool_inspect_github_health(self) -> Dict[str, Any]:
+        """Runs automated audit of GitHub repository code scanning and workflow runs."""
+        from src.diagnostics.github_auditor import GitHubAuditor
+
+        return GitHubAuditor().run_full_audit()
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""

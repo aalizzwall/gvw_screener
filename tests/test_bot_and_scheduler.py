@@ -763,6 +763,117 @@ class TestBotAndScheduler(unittest.TestCase):
 
         bot._answer_callback_query.assert_called_once_with("cb-ai-req", "已送出 AI 申請")
 
+    def test_job_trigger_logic_weekly_day(self):
+        # Weekly job set for Sunday at 20:00
+        job = ScheduledJob(
+            name="weekly_audit_test",
+            func=lambda: True,
+            daily_time="20:00",
+            weekly_day=6,  # Sunday
+            weekdays_only=False,
+            grace_minutes=60,
+        )
+        # 2026-10-25 is a Sunday (weekday = 6)
+        # Sunday 19:55:00: before target time
+        t_before = datetime(2026, 10, 25, 19, 55, 0)
+        self.assertFalse(job.should_run(t_before))
+
+        # Sunday 20:00:00: exact time
+        t_exact = datetime(2026, 10, 25, 20, 0, 0)
+        self.assertTrue(job.should_run(t_exact))
+
+        # Sunday 20:45:00: within grace window
+        t_grace = datetime(2026, 10, 25, 20, 45, 0)
+        self.assertTrue(job.should_run(t_grace))
+
+        # Sunday 20:45:00 if already run today: should not run again
+        job.last_run = datetime(2026, 10, 25, 20, 0, 5)
+        self.assertFalse(job.should_run(t_grace))
+
+        # Sunday 21:05:00: past grace window
+        job.last_run = None
+        t_past = datetime(2026, 10, 25, 21, 5, 0)
+        self.assertFalse(job.should_run(t_past))
+
+        # Monday 20:10:00 (weekday = 0): wrong day of week
+        t_monday = datetime(2026, 10, 26, 20, 10, 0)
+        self.assertFalse(job.should_run(t_monday))
+
+    def test_weekly_github_audit_creates_issue_when_problems_found(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            store.subscribe("12345")
+            scheduler = GVWScheduler(heartbeat_mgr=self.hb, alert_store=store)
+
+            fake_audit_result = {
+                "has_problems": True,
+                "summary": {"alerts_count": 2, "failures_count": 1, "open_issues_count": 0},
+                "alerts": [{"rule_id": "py/test", "severity": "high"}],
+                "workflow_failures": [{"name": "CI", "url": "https://github.com/test"}],
+                "open_issues": [],
+                "week_tag": "2026-W43",
+            }
+
+            with (
+                patch("src.diagnostics.github_auditor.GitHubAuditor.run_full_audit", return_value=fake_audit_result),
+                patch("src.diagnostics.github_auditor.GitHubAuditor.create_or_update_weekly_issue", return_value=(True, "https://github.com/test/issues/100")) as mock_issue,
+                patch("gvw_bot.scheduler.send_telegram_message", return_value=True) as mock_send,
+            ):
+                scheduler.job_weekly_github_audit()
+
+            mock_issue.assert_called_once()
+            self.assertTrue(mock_send.called)
+            sent_text = mock_send.call_args[0][0]
+            self.assertIn("https://github.com/test/issues/100", sent_text)
+            self.assertIn("CodeQL 弱點警報: <b>2</b>", sent_text)
+
+    def test_weekly_github_audit_greenlight_when_no_problems(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
+            store.subscribe("12345")
+            scheduler = GVWScheduler(heartbeat_mgr=self.hb, alert_store=store)
+
+            fake_audit_result = {
+                "has_problems": False,
+                "summary": {"alerts_count": 0, "failures_count": 0, "open_issues_count": 0},
+                "alerts": [],
+                "workflow_failures": [],
+                "open_issues": [],
+                "week_tag": "2026-W43",
+            }
+
+            with (
+                patch("src.diagnostics.github_auditor.GitHubAuditor.run_full_audit", return_value=fake_audit_result),
+                patch("src.diagnostics.github_auditor.GitHubAuditor.create_or_update_weekly_issue") as mock_issue,
+                patch("gvw_bot.scheduler.send_telegram_message", return_value=True) as mock_send,
+            ):
+                scheduler.job_weekly_github_audit()
+
+            # Should not create any issue
+            mock_issue.assert_not_called()
+            self.assertTrue(mock_send.called)
+            sent_text = mock_send.call_args[0][0]
+            self.assertIn("本週系統與程式碼庫檢查全數正常", sent_text)
+
+    def test_bot_handles_audit_command(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="999")
+        bot.send_message = Mock()
+
+        fake_audit_result = {
+            "has_problems": False,
+            "summary": {"alerts_count": 0, "failures_count": 0, "open_issues_count": 0},
+            "alerts": [],
+            "workflow_failures": [],
+            "open_issues": [],
+            "week_tag": "2026-W43",
+        }
+
+        with patch("src.diagnostics.github_auditor.GitHubAuditor.run_full_audit", return_value=fake_audit_result):
+            bot._execute_github_audit("999")
+
+        bot.send_message.assert_called()
+        self.assertIn("專案健康狀態優良", bot.send_message.call_args[0][1])
+
     def test_daily_report_broadcasts_to_subscribers_when_available(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")

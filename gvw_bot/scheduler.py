@@ -30,14 +30,16 @@ class ScheduledJob:
         func: Callable[[], Any],
         interval_minutes: Optional[int] = None,
         daily_time: Optional[str] = None,  # "HH:MM"
+        weekly_day: Optional[int] = None,  # 0 = Monday, ..., 6 = Sunday
         weekdays_only: bool = True,
-        active_hours: Optional[Tuple[float, float]] = None, # (start_hour, end_hour)
-        grace_minutes: int = 30
+        active_hours: Optional[Tuple[float, float]] = None,  # (start_hour, end_hour)
+        grace_minutes: int = 30,
     ):
         self.name = name
         self.func = func
         self.interval_minutes = interval_minutes
         self.daily_time = daily_time
+        self.weekly_day = weekly_day
         self.weekdays_only = weekdays_only
         self.active_hours = active_hours
         self.grace_minutes = grace_minutes
@@ -46,6 +48,9 @@ class ScheduledJob:
 
     def should_run(self, now: datetime) -> bool:
         if self.is_running:
+            return False
+
+        if self.weekly_day is not None and now.weekday() != self.weekly_day:
             return False
 
         if self.weekdays_only and now.weekday() >= 5:
@@ -151,6 +156,16 @@ class GVWScheduler:
         periodic_sync.last_run = datetime.now()
         self.jobs.append(periodic_sync)
 
+        # 7. Weekly GitHub & System Audit: Every Sunday at 20:00
+        self.jobs.append(ScheduledJob(
+            name="weekly_github_audit",
+            func=self.job_weekly_github_audit,
+            daily_time="20:00",
+            weekly_day=6,  # 6 = Sunday
+            weekdays_only=False,
+            grace_minutes=60,
+        ))
+
     # --- Job Implementations ---
 
     def job_intraday_monitor(self) -> None:
@@ -203,6 +218,62 @@ class GVWScheduler:
         logger.info("[JOB] Running Periodic Oldest-First Sync (10% batch)...")
         stats = self.orchestrator.run_collection_cycle(batch_ratio=0.1, force=False)
         self.hb.update_job_status("periodic_sync", "ok", message=f"Sync stats: {stats}")
+
+    def job_weekly_github_audit(self) -> None:
+        logger.info("[JOB] Running Weekly GitHub & System Audit...")
+        from src.diagnostics.github_auditor import GitHubAuditor
+
+        auditor = GitHubAuditor()
+        try:
+            result = auditor.run_full_audit()
+            summary = result.get("summary", {})
+            alerts_count = summary.get("alerts_count", 0)
+            failures_count = summary.get("failures_count", 0)
+            issues_count = summary.get("open_issues_count", 0)
+
+            if result.get("has_problems"):
+                # 發現問題：在 GitHub 建立/更新 Issue 並推播警報
+                created, issue_url = auditor.create_or_update_weekly_issue(result)
+                action_text = "已建立新 Issue" if created else "已更新既有 Issue"
+                tg_msg = (
+                    "⚠️ <b>【GVW 每週 GitHub 系統巡檢報告】</b>\n"
+                    f"發現異常項目需要跟進（{action_text}）：\n"
+                    f"• 🛡️ CodeQL 弱點警報: <b>{alerts_count}</b> 項\n"
+                    f"• ❌ 過去 7 天 CI 失敗: <b>{failures_count}</b> 次\n"
+                    f"• 📌 既有待跟進 Issue: <b>{issues_count}</b> 項\n\n"
+                    f"🔗 <b>GitHub Issue 追蹤連結：</b>\n"
+                    f"{issue_url}"
+                )
+                self.hb.update_job_status(
+                    "weekly_github_audit",
+                    "warning",
+                    message=f"Reported {alerts_count} alerts, {failures_count} CI failures to {issue_url}",
+                )
+            else:
+                # 無問題：不建立 GitHub Issue 避免雜訊，發送綠燈確認訊息
+                tg_msg = (
+                    "✅ <b>【GVW 每週 GitHub 系統巡檢報告】</b>\n"
+                    "本週系統與程式碼庫檢查全數正常：\n"
+                    f"• 🛡️ CodeQL 弱點警報: 0 項\n"
+                    f"• ⚙️ CI/CD 執行狀態: 全部正常 (0 失敗)\n"
+                    f"• 📌 待處理 Issue 追蹤: {issues_count} 項\n\n"
+                    "🎉 系統運行健全，祝下週交易順利！"
+                )
+                self.hb.update_job_status(
+                    "weekly_github_audit",
+                    "ok",
+                    message="All checks passed (0 alerts, 0 failures)",
+                )
+
+            # 推播至 Telegram 頻道與所有訂閱用戶
+            if TELEGRAM_HOME_CHANNEL:
+                send_telegram_message(tg_msg, chat_id=TELEGRAM_HOME_CHANNEL)
+            for chat_id in self.alert_store.get_subscribers():
+                send_telegram_message(tg_msg, chat_id=chat_id)
+
+        except Exception as e:
+            logger.error(f"Error executing weekly_github_audit: {e}", exc_info=True)
+            self.hb.update_job_status("weekly_github_audit", "error", message=str(e))
 
     # --- Scheduler Execution and Loop ---
 
