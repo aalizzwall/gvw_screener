@@ -4,7 +4,7 @@
   <a href="https://github.com/aalizzwall/gvw_screener/actions/workflows/deploy.yml"><img src="https://github.com/aalizzwall/gvw_screener/actions/workflows/deploy.yml/badge.svg" alt="CI Status"></a>
   <a href="https://github.com/aalizzwall/gvw_screener/actions/workflows/codeql.yml"><img src="https://github.com/aalizzwall/gvw_screener/actions/workflows/codeql.yml/badge.svg" alt="CodeQL Status"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.9%20%7C%203.11-blue.svg" alt="Python Version"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11+-blue.svg" alt="Python Version"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/badge/code%20style-ruff-000000.svg" alt="Code Style: Ruff"></a>
 </p>
 
