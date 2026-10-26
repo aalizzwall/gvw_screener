@@ -11,7 +11,7 @@ assignees: ""
 
 ## 🔍 環境資訊 (Environment)
 - 運行環境: Raspberry Pi / Linux / macOS / Docker
-- Python 版本: 3.9 / 3.10 / 3.11 / other
+- Python 版本: 3.11 / 3.12 / other
 
 ## 📝 詳細內容 (Details)
 <!-- 請在此處填寫詳細說明、日誌或截圖 -->

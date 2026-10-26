@@ -95,7 +95,7 @@ python3 -m py_compile $(find src gvw_bot tests -name "*.py")
    ```
 2. 在 GitHub 建立 Pull Request。
 3. 詳細填寫 [Pull Request Template](.github/pull_request_template.md) 中規範的欄位與自檢清單。
-4. 確保 GitHub Actions CI 矩陣測試（Python 3.9 與 3.11）全部亮綠燈。
+4. 確保 GitHub Actions CI 測試（Python 3.11+）全部亮綠燈。
 5. 專案維護者將會為您進行 Code Review 並討論合併。
 
 ---
