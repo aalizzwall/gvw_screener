@@ -21,7 +21,7 @@ from src.config import (
 )
 from src.analysis.ai_analyst import analyze_stock, check_providers, _provider_key
 from src.state.ai_access import AIAnalysisAccessStore
-from src.state.ai_provider import AIProviderPreferenceStore, model_catalog
+from src.state.ai_provider import AIProviderPreferenceStore, model_catalog, AI_CHAIN_PRESETS
 from src.reporting.report_engine import generate_daily_report, get_financials, get_suggested_price
 from src.analysis.ranker import run_ranking
 from src.core.orchestrator import Orchestrator
@@ -562,10 +562,10 @@ class TelegramBotHandler:
                         buttons.append([{"text": f"🌐 切換至 gemma/{m}", "callback_data": f"ai_select:gemma/{m}"}])
             else:
                 lines.append(f"• 狀態：{detail}")
-                lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+                lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:25])
         else:
             lines.append("• 狀態：未設定 GEMINI_API_KEY")
-            lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:12])
+            lines.extend(f"• <code>gemma/{m}</code>" for m in catalog.get("gemma", [])[:25])
 
         # 3. OpenAI models
         lines.append("\n⚡ <b>OpenAI</b>")
@@ -583,12 +583,33 @@ class TelegramBotHandler:
             lines.append("• 狀態：未設定 OPENAI_API_KEY")
             lines.extend(f"• <code>openai/{m}</code>" for m in catalog.get("openai", [])[:4])
 
-        lines.append("\n💡 <b>切換主力方式：</b>")
-        lines.append("1. 點擊下方按鈕快速切換主力模型")
-        lines.append("2. 或輸入指令：<code>/ai_set &lt;provider/model&gt;</code>")
-        lines.append("例如：<code>/ai_set local/deepseek/deepseek-r1-0528-qwen3-8b</code>")
+        # 4. Ready-to-copy sequence templates for /ai_set
+        current_chain = self.ai_provider_store.get_chain()
+        current_cmd = f"/ai_set {' '.join(current_chain)}" if current_chain else "/ai_set gemma/gemini-2.5-flash-lite local/active"
 
-        reply_markup = {"inline_keyboard": buttons} if buttons else None
+        lines.append("\n📋 <b>一鍵複製 /ai_set 模型順序模板（點擊代碼即可複製）：</b>")
+        for key, preset in AI_CHAIN_PRESETS.items():
+            chain_str = " ".join(preset["chain"])
+            lines.append(f"• <b>{preset['title']}</b>（{preset['description']}）：")
+            lines.append(f"<code>/ai_set {html.escape(chain_str)}</code>")
+
+        lines.append(f"• <b>當前配置複製（方便手動編輯順序）：</b>")
+        lines.append(f"<code>{html.escape(current_cmd)}</code>")
+
+        lines.append("\n💡 <b>切換模型與順序方式：</b>")
+        lines.append("1. 點擊下方【一鍵套用】按鈕，直接配置整組階梯備援鏈")
+        lines.append("2. 點擊單一模型按鈕，快速將該模型提升為第 1 順位主力")
+        lines.append("3. 或直接點擊上方 <code>/ai_set ...</code> 代碼複製後發送自訂順序")
+
+        # Preset buttons placed at the top for quick access
+        preset_buttons = [
+            [{"text": f"⚡ 套用：{AI_CHAIN_PRESETS['lite_ladder']['title']}", "callback_data": "ai_preset:lite_ladder"}],
+            [{"text": f"🧠 套用：{AI_CHAIN_PRESETS['standard']['title']}", "callback_data": "ai_preset:standard"}],
+            [{"text": f"🏠 套用：{AI_CHAIN_PRESETS['local_first']['title']}", "callback_data": "ai_preset:local_first"}],
+        ]
+        all_buttons = preset_buttons + buttons
+
+        reply_markup = {"inline_keyboard": all_buttons} if all_buttons else None
         self.send_message(chat_id, "\n".join(lines), reply_markup=reply_markup)
 
     def _ai_status_text(self) -> str:
@@ -965,6 +986,25 @@ class TelegramBotHandler:
         # 2. Owner-only admin callbacks
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
+            return
+
+        if data.startswith("ai_preset:"):
+            preset_key = data[len("ai_preset:"):]
+            preset = AI_CHAIN_PRESETS.get(preset_key)
+            if not preset:
+                self._answer_callback_query(callback_id, "未知的推薦配置。")
+                return
+            try:
+                self.ai_provider_store.set_chain(preset["chain"])
+                self._answer_callback_query(callback_id, f"已套用：{preset['title']}")
+                self.send_message(
+                    actor_id,
+                    f"✅ <b>已套用推薦模型順序：{html.escape(preset['title'])}</b>\n"
+                    f"<i>{html.escape(preset['description'])}</i>\n\n"
+                    + self._ai_status_text(),
+                )
+            except Exception as e:
+                self._answer_callback_query(callback_id, f"套用失敗: {e}")
             return
 
         if data.startswith("ai_select:"):

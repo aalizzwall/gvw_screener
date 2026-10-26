@@ -29,6 +29,12 @@ _BUILTIN_MODELS: Dict[str, List[str]] = {
         "gemini-2.0-flash",
         "gemini-2.0-flash-exp",
         "gemini-1.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
         "gemma-2-27b-it",
         "gemma-2-9b-it",
         "gemma-2-2b-it",
@@ -61,6 +67,38 @@ def model_catalog() -> Dict[str, List[str]]:
         # Ignore cache probe failure and return base catalog
         pass
     return catalog
+
+
+AI_CHAIN_PRESETS: Dict[str, Dict[str, Any]] = {
+    "lite_ladder": {
+        "title": "⚡ Gemini Lite 梯隊備援鏈",
+        "description": "Flash-Lite 多階梯速援 + 地端保底（推薦高可用/低延遲）",
+        "chain": [
+            "gemma/gemini-3.5-flash-lite",
+            "gemma/gemini-3.1-flash-lite",
+            "gemma/gemini-2.5-flash-lite",
+            "gemma/gemini-3.5-flash",
+            "local/active",
+        ],
+    },
+    "standard": {
+        "title": "🧠 Gemini Standard 均衡鏈",
+        "description": "高精度 Flash 主力 + Lite 備援 + 地端保底",
+        "chain": [
+            "gemma/gemini-2.5-flash",
+            "gemma/gemini-2.5-flash-lite",
+            "local/active",
+        ],
+    },
+    "local_first": {
+        "title": "🏠 地端 Active 優先鏈",
+        "description": "本機 LM-Studio 優先 + 雲端 Flash 備援",
+        "chain": [
+            "local/active",
+            "gemma/gemini-2.5-flash-lite",
+        ],
+    },
+}
 
 
 def default_chain() -> List[str]:
