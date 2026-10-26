@@ -891,5 +891,64 @@ class TestBotAndScheduler(unittest.TestCase):
             sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}
             self.assertEqual(sub_targets, {"100", "200"})
 
+    def test_render_ai_models_includes_copyable_ai_set_presets_and_buttons(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="999")
+        bot.send_message = Mock()
+
+        bot._render_ai_models("999")
+        bot.send_message.assert_called_once()
+        text = bot.send_message.call_args[0][1]
+        markup = bot.send_message.call_args[1].get("reply_markup", {})
+
+        # Verify copyable /ai_set presets are in message text
+        self.assertIn("一鍵複製 /ai_set 模型順序模板", text)
+        self.assertIn("/ai_set gemma/gemini-3.5-flash-lite", text)
+        self.assertIn("local/active", text)
+
+        # Verify inline keyboard has preset buttons
+        all_cb = [b["callback_data"] for row in markup.get("inline_keyboard", []) for b in row]
+        self.assertIn("ai_preset:lite_ladder", all_cb)
+        self.assertIn("ai_preset:standard", all_cb)
+        self.assertIn("ai_preset:local_first", all_cb)
+
+    def test_callback_query_applies_ai_preset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AIProviderPreferenceStore(f"{temp_dir}/ai_pref.json")
+            bot = TelegramBotHandler(token="test-token", owner_user_id="999", ai_provider_store=store)
+            bot._answer_callback_query = Mock()
+            bot.send_message = Mock()
+
+            bot.handle_callback_query({
+                "id": "cb-preset-1",
+                "from": {"id": 999},
+                "data": "ai_preset:lite_ladder",
+            })
+
+            chain = store.get_chain()
+            self.assertEqual(chain[0], "gemma/gemini-3.5-flash-lite")
+            self.assertIn("local/active", chain)
+            bot._answer_callback_query.assert_called_once_with("cb-preset-1", "已套用：⚡ Gemini Lite 梯隊備援鏈")
+            bot.send_message.assert_called_once()
+            self.assertIn("已套用推薦模型順序", bot.send_message.call_args[0][1])
+
+    def test_ai_set_accepts_flash_lite_ladder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AIProviderPreferenceStore(f"{temp_dir}/ai_pref.json")
+            bot = TelegramBotHandler(token="test-token", owner_user_id="999", ai_provider_store=store)
+
+            user_cmd_text = "/ai_set gemma/gemini-3.5-flash-lite gemma/gemini-3.1-flash-lite gemma/gemini-2.5-flash-lite gemma/gemini-3.5-flash local/active"
+            args = user_cmd_text.split()[1:]
+            resp = bot._update_ai_chain("/ai_set", args)
+
+            self.assertIn("✅ 已更新", resp)
+            chain = store.get_chain()
+            self.assertEqual(chain, [
+                "gemma/gemini-3.5-flash-lite",
+                "gemma/gemini-3.1-flash-lite",
+                "gemma/gemini-2.5-flash-lite",
+                "gemma/gemini-3.5-flash",
+                "local/active",
+            ])
+
 if __name__ == "__main__":
     unittest.main()
