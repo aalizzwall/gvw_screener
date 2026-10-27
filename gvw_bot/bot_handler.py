@@ -38,6 +38,7 @@ from src.diagnostics.doctor import GVWDoctor
 from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
 from src.agent.maintenance_agent import MaintenanceAgent
 from src.state.alert_subscribers import AlertSubscriptionStore
+from src.state.feedback_queue import FeedbackQueueStore
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger("gvw.bot")
@@ -46,6 +47,7 @@ BOT_COMMANDS = [
     {"command": "report", "description": "查看最新選股日報與全市場 Top 10"},
     {"command": "analyze", "description": "AI 個股深度評估（例如 /analyze 2330）"},
     {"command": "monitor", "description": "盤中即時突破信號掃描與推播開關"},
+    {"command": "feedback", "description": "回報上則異常回覆內容供自我巡檢整理與修復"},
     {"command": "maintain", "description": "切換維護模式，自然語言診斷與修復"},
     {"command": "status", "description": "系統服務狀態、排程任務與健康管理"},
     {"command": "ai", "description": "AI 智慧控制中心（模型順序、健康檢測、地端設定）"},
@@ -57,6 +59,7 @@ PUBLIC_COMMANDS = [
     {"command": "start", "description": "開始使用 / 叫出功能按鈕"},
     {"command": "report", "description": "查看最新選股日報與 Top 10"},
     {"command": "analyze", "description": "個股深度 AI 評估（需申請）"},
+    {"command": "feedback", "description": "回報上則異常回覆內容"},
     {"command": "help", "description": "查看使用指南與指令說明"},
 ]
 
@@ -69,6 +72,7 @@ MENU_BUTTONS = {
     "🔕 盤中監控": "/toggle_monitor",
     "🤖 AI 個股分析": "/analyze",
     "📝 申請 AI 分析": "/request_ai",
+    "⚠️ 問題回報": "/feedback",
     "🩺 系統狀態": "/status",
     "🔍 盤中監控": "/monitor",
     "📥 採集資料": "/collect",
@@ -78,7 +82,7 @@ MENU_BUTTONS = {
 REPLY_KEYBOARD = {
     "keyboard": [
         ["🏆 Top 10 選股", "🔕 盤中監控"],
-        ["🤖 AI 個股分析"],
+        ["🤖 AI 個股分析", "⚠️ 問題回報"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -86,7 +90,7 @@ REPLY_KEYBOARD = {
 PUBLIC_REPLY_KEYBOARD = {
     "keyboard": [
         ["🏆 Top 10 選股", "🔕 盤中監控"],
-        ["📝 申請 AI 分析"],
+        ["📝 申請 AI 分析", "⚠️ 問題回報"],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -166,6 +170,7 @@ class TelegramBotHandler:
         ai_access_store: Optional[AIAnalysisAccessStore] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
         alert_store: Optional[AlertSubscriptionStore] = None,
+        feedback_store: Optional[FeedbackQueueStore] = None,
         doctor: Optional[GVWDoctor] = None,
         issue_solver: Optional[IssueSolver] = None,
         maintenance_agent: Optional[MaintenanceAgent] = None,
@@ -178,6 +183,7 @@ class TelegramBotHandler:
         self.ai_access_store = ai_access_store or AIAnalysisAccessStore()
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
         self.alert_store = alert_store or AlertSubscriptionStore()
+        self.feedback_store = feedback_store or FeedbackQueueStore()
         self.doctor = doctor or GVWDoctor(ai_provider_store=self.ai_provider_store)
         self.issue_solver = issue_solver or IssueSolver(ai_provider_store=self.ai_provider_store)
         self.maintenance_agent = maintenance_agent or MaintenanceAgent(
@@ -191,6 +197,9 @@ class TelegramBotHandler:
         self._fixing = False
         self.maintenance_mode_chats: set = set()
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
+        self.pending_feedback_note_chats: Dict[Union[int, str], int] = {}
+        self.last_bot_replies: Dict[Union[int, str], str] = {}
+        self.last_user_inputs: Dict[Union[int, str], str] = {}
 
     def send_message(
         self,
@@ -199,7 +208,10 @@ class TelegramBotHandler:
         parse_mode: str = "HTML",
         reply_markup: Optional[Dict[str, Any]] = None,
         user_id: Optional[Union[int, str]] = None,
+        track_reply: bool = True,
     ) -> bool:
+        if track_reply and text and not text.startswith(("⏳", "🔍 正在", "🔄 正在", "📝 <b>已收到您的問題回報")):
+            self.last_bot_replies[chat_id] = text
         if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
@@ -284,7 +296,7 @@ class TelegramBotHandler:
         return {
             "keyboard": [
                 ["🏆 Top 10 選股", monitor_btn],
-                [ai_btn],
+                [ai_btn, "⚠️ 問題回報"],
             ],
             "resize_keyboard": True,
             "is_persistent": True,
@@ -301,6 +313,9 @@ class TelegramBotHandler:
     ):
         cmd = MENU_BUTTONS.get(command.strip(), command.lower().strip())
         logger.info(f"Received Telegram command: {cmd} from chat {chat_id}")
+        if cmd != "/feedback":
+            self.pending_feedback_note_chats.pop(chat_id, None)
+            self.last_user_inputs[chat_id] = text.strip()
         owner_only_commands = {
             "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
@@ -444,6 +459,37 @@ class TelegramBotHandler:
                 self.send_message(chat_id, "請輸入 4 至 6 位數的台股代碼進行 AI 分析，例如 2330。")
                 return
             self._send_stock_analysis(chat_id, parts[1].strip())
+
+        elif cmd == "/feedback":
+            note_arg = text.split(maxsplit=1)[1].strip() if text.startswith("/") and len(text.split(maxsplit=1)) > 1 else ""
+            last_reply = self.last_bot_replies.get(chat_id, "")
+            last_input = self.last_user_inputs.get(chat_id, "")
+            if not last_reply and not note_arg:
+                self.send_message(
+                    chat_id,
+                    "ℹ️ 目前尚無上一則機器人回覆記錄可引用；您可直接輸入 <code>/feedback 問題描述</code> 回報問題。",
+                    user_id=user_id,
+                    track_reply=False,
+                )
+                return
+
+            entry = self.feedback_store.add_report(
+                chat_id=chat_id,
+                user_id=user_id if user_id is not None else chat_id,
+                bot_reply=last_reply,
+                user_input=last_input,
+                note=note_arg,
+            )
+            snippet = last_reply.strip().replace("\n", " ")[:80] if last_reply else "（無前則回覆）"
+            self.send_message(
+                chat_id,
+                f"📝 <b>已收到您的問題回報（編號 #{entry['id']}）</b>\n\n"
+                f"• <b>已引用前則回覆</b>：<code>{html.escape(snippet)}...</code>\n"
+                + (f"• <b>補充說明</b>：<code>{html.escape(note_arg)}</code>\n" if note_arg else "")
+                + "\n系統將於<b>自我巡檢</b>時自動彙整此回報，並評估是否可直接自動修復（如重抓缺漏資料、切換備援模型）或建立 GitHub Issue 追蹤修復。",
+                user_id=user_id,
+                track_reply=False,
+            )
 
         elif cmd in {"/query", "/stock"}:
             parts = text.split(maxsplit=1)

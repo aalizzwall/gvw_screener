@@ -6,9 +6,11 @@ Autonomy policy (owner-approved):
 - Weight tuning is only *proposed*; applying needs explicit owner approval.
 - Notifications are silent unless something is abnormal / auto-fixed / needs a decision.
 """
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -19,6 +21,7 @@ from src.autopilot.benchmark import BenchmarkSeries
 from src.autopilot.ledger import RecommendationLedger
 from src.config import DATA_DIR, TELEGRAM_OWNER_USER_ID
 from src.reporting.telegram_notifier import send_telegram_message
+from src.state.feedback_queue import FeedbackQueueStore
 
 logger = logging.getLogger("gvw.autopilot")
 
@@ -44,6 +47,7 @@ class AutoPilot:
         self.data_dir = data_dir or DATA_DIR
         self.ledger = RecommendationLedger(state, path=os.path.join(self.data_dir, "recommendations.json"))
         self.benchmark = BenchmarkSeries(path=os.path.join(self.data_dir, "benchmark.json"))
+        self.feedback_store = FeedbackQueueStore(path=os.path.join(self.data_dir, "feedback_reports.json"))
         self._notify = notify or send_telegram_message
         self._last_alert: Dict[str, float] = {}
         self._streak: Dict[str, int] = {}
@@ -153,7 +157,128 @@ class AutoPilot:
         escalated = [s for s, n in self._streak.items() if n == ESCALATE_AFTER]
         for sig in escalated:
             self._escalate(sig, diag)
-        return {"issues": issues, "actions": actions, "escalated": escalated}
+        feedback_results = self.triage_feedback_reports()
+        return {"issues": issues, "actions": actions, "escalated": escalated, "feedback": feedback_results}
+
+    def triage_feedback_reports(self) -> List[Dict[str, Any]]:
+        """
+        Evaluates user-reported faulty replies during self-patrol:
+        1. Missing / stale / zero valuation data for a stock -> auto-refreshes ticker via Orchestrator.
+        2. AI provider failure / timeout / truncation -> triggers AI health check & provider failover.
+        3. Code / formatting / logic bugs -> deduplicates and opens a GitHub Issue.
+        """
+        pending = self.feedback_store.pending_reports()
+        if not pending:
+            return []
+
+        processed: List[Dict[str, Any]] = []
+        summary_lines = ["📋 <b>【GVW 自我巡檢】使用者問題回報整理與評估</b>"]
+
+        for rep in pending:
+            rep_id = rep.get("id", 0)
+            bot_reply = str(rep.get("bot_reply", ""))
+            user_input = str(rep.get("user_input", ""))
+            note = str(rep.get("note", ""))
+            ticker = str(rep.get("ticker", ""))
+            combined = f"{user_input}\n{bot_reply}\n{note}"
+
+            # Case 1: Stock data missing or valuation indicators are N/A / 0
+            is_data_issue = bool(ticker) and any(
+                kw in combined
+                for kw in (
+                    "尚無已採集資料",
+                    "本益比 (P/E)：0.0",
+                    "股價淨值比 (P/B)：0",
+                    "最新收盤：N/A",
+                    "資料缺漏",
+                    "缺漏",
+                    "空白",
+                    "無資料",
+                )
+            )
+            # Case 2: AI provider failure / rate limit / incomplete reasoning
+            is_ai_issue = any(
+                kw in combined
+                for kw in (
+                    "分析請求失敗",
+                    "429",
+                    "503",
+                    "Peer count",
+                    "Industry Avg",
+                    "尚未設定",
+                    "耗盡 Token",
+                )
+            )
+
+            if is_data_issue and ticker:
+                try:
+                    self.orchestrator.update_stock(ticker, force=True)
+                    resolution = f"已自動重新強制採集 {ticker} 行情與財務估值資料"
+                    self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
+                    self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
+                    summary_lines.append(f"• <b>回報 #{rep_id} ({ticker})</b>：🛠️ 可直接修復 ➔ {resolution}")
+                    processed.append({"id": rep_id, "action": "auto_fixed", "detail": resolution})
+                    continue
+                except Exception as exc:
+                    logger.warning("Auto-fix stock refresh failed for feedback #%s: %s", rep_id, exc)
+
+            if is_ai_issue:
+                try:
+                    rem_actions = self.doctor.run_remediation(light=True)
+                    real_rem = [a for a in rem_actions if "無須" not in a]
+                    resolution = (
+                        "；".join(real_rem)
+                        if real_rem
+                        else "已執行 AI 備援鏈路健康檢查與狀態重整"
+                    )
+                    self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
+                    self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
+                    summary_lines.append(f"• <b>回報 #{rep_id}</b>：🛠️ 可直接修復 ➔ {resolution}")
+                    processed.append({"id": rep_id, "action": "auto_fixed", "detail": resolution})
+                    continue
+                except Exception as exc:
+                    logger.warning("Auto-fix AI failover failed for feedback #%s: %s", rep_id, exc)
+
+            # Case 3: Escalate to GitHub Issue for code/formatting/logic fix
+            sig_seed = re.sub(r"\s+", " ", (note or user_input or bot_reply[:120])).strip()
+            sig_hash = hashlib.sha1(sig_seed.encode("utf-8", errors="ignore")).hexdigest()[:10]
+            signature = f"user-feedback:{sig_hash}"
+            title_snippet = (note or user_input or bot_reply.splitlines()[0] if bot_reply else "異常回覆")[:50]
+            issue_title = f"使用者回報異常：{title_snippet}"
+            issue_body = (
+                f"### 使用者問題回報 (#{rep_id})\n"
+                f"- **回報時間**：`{rep.get('created_at')}`\n"
+                f"- **使用者輸入**：`{user_input or '無'}`\n"
+                f"- **補充說明**：`{note or '無'}`\n"
+                f"- **相關個股**：`{ticker or '無'}`\n\n"
+                f"#### 機器人原始回覆內容\n"
+                f"```text\n{bot_reply[:2500]}\n```\n\n"
+                "經自主巡檢評估無法僅靠重抓資料或切換備援解決，建立 Issue 追蹤修復。"
+            )
+            try:
+                created, url = self.doctor.report_unresolved_issue(
+                    title=issue_title,
+                    body=issue_body,
+                    error_signature=signature,
+                    labels=["bug", "user-feedback"],
+                )
+                act_label = "已建立新 Issue" if created else "已歸併至既有 Issue"
+                resolution = f"{act_label}：{url}"
+                self.feedback_store.mark_resolved(rep_id, "issue_opened", resolution)
+                self._record(f"問題回報 #{rep_id} 轉開單：{resolution}")
+                summary_lines.append(f"• <b>回報 #{rep_id}</b>：🧾 需改動程式碼，{act_label} ➔ {url}")
+                processed.append({"id": rep_id, "action": "issue_opened", "detail": url})
+            except Exception as exc:
+                logger.warning("Failed to open GitHub issue for feedback #%s: %s", rep_id, exc)
+                resolution = f"評估需開立 Issue（待 GitHub 連線恢復）：{issue_title}"
+                self.feedback_store.mark_resolved(rep_id, "escalated_local", resolution)
+                self._record(f"問題回報 #{rep_id}：{resolution}")
+                summary_lines.append(f"• <b>回報 #{rep_id}</b>：⚠️ {resolution}")
+                processed.append({"id": rep_id, "action": "escalated_local", "detail": resolution})
+
+        if processed:
+            self.notify_owner("\n".join(summary_lines))
+        return processed
 
     def _escalate(self, signature: str, diag: Dict[str, Any]) -> None:
         body = (
@@ -215,6 +340,7 @@ class AutoPilot:
 
     def postmarket_review(self) -> Dict[str, Any]:
         """After ranking: log picks, score past picks, maybe propose tuning, send one digest."""
+        self.triage_feedback_reports()
         self.benchmark.update(self.state.get_market_index())
         recorded = self.ledger.record(self.state.get_ranks())
         filled = self.ledger.evaluate(self.benchmark)
@@ -233,6 +359,7 @@ class AutoPilot:
         return {"recorded": recorded, "filled": filled, "summary": summary, "proposal": proposal}
 
     def nightly_maintenance(self) -> List[str]:
+        self.triage_feedback_reports()
         actions = self.doctor.run_remediation(light=False)
         real = [a for a in actions if "無須" not in a]
         if real:
