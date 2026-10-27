@@ -1,9 +1,12 @@
+import json
 import os
 from typing import Optional
 
 def _find_env_file() -> Optional[str]:
     candidate_paths = [
         os.path.join(os.getcwd(), ".env"),
+        "/home/pi/gvw_screener/.env",
+        os.path.expanduser("~/gvw_screener/.env"),
         os.path.expanduser("~/.hermes/.env"),
         "/home/pi/.hermes/.env",
         os.path.expanduser("~/.env")
@@ -30,15 +33,71 @@ def load_env():
             # Ignore errors reading optional env file
             pass
 
+def load_pi_agent_config(pi_dir: Optional[str] = None):
+    """
+    Auto-inherits API keys and local AI endpoint configurations from ~/.pi/agent/
+    (created by `pi login` or pi configuration) if not already explicitly set in environment or .env.
+    This establishes ~/.pi/agent as the single source of truth across gvw_bot and pi CLI.
+    """
+    target_dir = pi_dir or os.environ.get("PI_CODING_AGENT_DIR") or os.path.expanduser("~/.pi/agent")
+
+    # 1. auth.json (API keys for Google, OpenAI, etc.)
+    auth_file = os.path.join(target_dir, "auth.json")
+    if os.path.exists(auth_file):
+        try:
+            with open(auth_file, "r", encoding="utf-8") as f:
+                auth_data = json.load(f)
+
+            # Google AI Studio / Gemini key
+            if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+                google_entry = auth_data.get("google", {})
+                if isinstance(google_entry, dict) and google_entry.get("key"):
+                    os.environ["GEMINI_API_KEY"] = google_entry["key"]
+                elif isinstance(google_entry, str) and google_entry:
+                    os.environ["GEMINI_API_KEY"] = google_entry
+
+            # OpenAI key
+            if not os.environ.get("OPENAI_API_KEY"):
+                openai_entry = auth_data.get("openai", {})
+                if isinstance(openai_entry, dict) and openai_entry.get("key"):
+                    os.environ["OPENAI_API_KEY"] = openai_entry["key"]
+                elif isinstance(openai_entry, str) and openai_entry:
+                    os.environ["OPENAI_API_KEY"] = openai_entry
+        except Exception:
+            pass
+
+    # 2. models.json (Local LLM providers / LM-Studio base URL, apiKey, etc.)
+    models_file = os.path.join(target_dir, "models.json")
+    if os.path.exists(models_file):
+        try:
+            with open(models_file, "r", encoding="utf-8") as f:
+                models_data = json.load(f)
+            providers = models_data.get("providers", {})
+            local_provider = providers.get("local", {})
+            if isinstance(local_provider, dict):
+                if not os.environ.get("LOCAL_AI_BASE_URL") and not os.environ.get("LM_STUDIO_BASE_URL"):
+                    base_url = local_provider.get("baseUrl")
+                    if base_url:
+                        os.environ["LOCAL_AI_BASE_URL"] = base_url
+                if not os.environ.get("LOCAL_AI_API_KEY"):
+                    api_key = local_provider.get("apiKey")
+                    if api_key:
+                        os.environ["LOCAL_AI_API_KEY"] = api_key
+        except Exception:
+            pass
+
 # Initialize environment variables
 load_env()
+load_pi_agent_config()
 
 # Base directories resolution
 def _resolve_base_dir() -> str:
     # 1. Custom ENV override
     if os.environ.get("GVW_HOME"):
         return os.environ["GVW_HOME"]
-    # 2. Raspberry Pi / Hermes server environment
+    # 2. Raspberry Pi server environment
+    if os.path.exists("/home/pi/gvw_screener"):
+        return "/home/pi/gvw_screener"
     if os.path.exists("/home/pi/.hermes/gvw_screener"):
         return "/home/pi/.hermes/gvw_screener"
     # 3. Local repository workspace

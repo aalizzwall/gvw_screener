@@ -369,7 +369,7 @@ class MaintenanceAgent:
                 mapped.append(f"local/{clean_model}")
 
         # Ensure default cloud models are present if chain is empty or missing them
-        for default_cand in ["google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "openai/gpt-4o-mini"]:
+        for default_cand in ["google/gemini-3.5-flash-lite", "google/gemini-3.5-flash", "openai/gpt-4o-mini"]:
             if default_cand not in mapped:
                 mapped.insert(len(mapped) - 1 if "local/active" in mapped else len(mapped), default_cand)
 
@@ -386,12 +386,29 @@ class MaintenanceAgent:
 
         return deduped
 
-    def tool_pi_agent(self, prompt: str, timeout: int = 120) -> Dict[str, Any]:
+    def _clean_pi_output(self, text: str) -> str:
+        """Strips ANSI escape codes and CLI startup warnings from pi output."""
+        cleaned = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+        lines = cleaned.splitlines()
+        while lines and (
+            lines[0].strip().startswith("Warning:")
+            or lines[0].strip().startswith("warning:")
+        ):
+            lines.pop(0)
+        return "\n".join(lines).strip()
+
+    def tool_pi_agent(
+        self,
+        prompt: str,
+        timeout: int = 120,
+        session_id: Optional[str] = None,
+        append_system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Invokes Pi Coding Agent CLI on host with automated strength-ranked fallback.
         Tries cloud models first by capability, cascading to local/active as the ultimate safety net.
         """
-        pi_bin = shutil.which("pi") or "/usr/bin/pi"
+        pi_bin = shutil.which("pi") or ("/usr/bin/pi" if os.path.exists("/usr/bin/pi") else None)
         if not (pi_bin and os.path.exists(pi_bin)):
             return {
                 "success": False,
@@ -402,6 +419,17 @@ class MaintenanceAgent:
         candidates = self._get_pi_model_candidates()
         from src.agent.shell_tools import redact_secrets, _truncate
 
+        session_args: List[str] = []
+        if session_id:
+            clean_sid = re.sub(r"[^a-zA-Z0-9_-]", "_", str(session_id))
+            session_args = ["--session-id", f"telegram-{clean_sid}"]
+        else:
+            session_args = ["--no-session"]
+
+        sys_prompt_args: List[str] = []
+        if append_system_prompt:
+            sys_prompt_args = ["--append-system-prompt", append_system_prompt]
+
         last_error = ""
         attempted_models: List[str] = []
 
@@ -409,15 +437,21 @@ class MaintenanceAgent:
             attempted_models.append(model_id)
             logger.info(f"Attempting Pi Agent execution with model: {model_id}...")
             try:
+                cmd = (
+                    [pi_bin, "-p"]
+                    + session_args
+                    + sys_prompt_args
+                    + ["--model", model_id, str(prompt)]
+                )
                 res = subprocess.run(
-                    [pi_bin, "-p", "--model", model_id, str(prompt)],
+                    cmd,
                     cwd=PROJECT_ROOT,
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=safe_timeout,
                 )
-                out = res.stdout.strip()
+                out = self._clean_pi_output(res.stdout)
                 err = res.stderr.strip()
 
                 if res.returncode == 0 and out:
@@ -431,7 +465,9 @@ class MaintenanceAgent:
 
                 error_detail = err or out
                 last_error = f"Model {model_id} failed (code {res.returncode}): {error_detail[:200]}"
-                logger.warning(f"Pi Agent model {model_id} failed: {error_detail[:150]}, falling back to next candidate...")
+                logger.warning(
+                    f"Pi Agent model {model_id} failed: {error_detail[:150]}, falling back to next candidate..."
+                )
 
             except subprocess.TimeoutExpired:
                 last_error = f"Model {model_id} timed out after {safe_timeout}s"
@@ -538,10 +574,26 @@ class MaintenanceAgent:
         return self.sessions[session_id]
 
     def clear_session(self, session_id: str):
-        """Clears memory for a specific session."""
+        """Clears memory for a specific session, including any Pi CLI session storage."""
         if session_id in self.sessions:
             self.sessions[session_id].clear()
             logger.info(f"Cleared session context for {session_id}")
+
+        try:
+            clean_sid = re.sub(r"[^a-zA-Z0-9_-]", "_", str(session_id))
+            pi_dir = os.environ.get("PI_CODING_AGENT_DIR") or os.path.expanduser("~/.pi/agent")
+            sessions_root = os.path.join(pi_dir, "sessions")
+            if os.path.exists(sessions_root):
+                for root, _, files in os.walk(sessions_root):
+                    for fname in files:
+                        if fname.endswith(f"telegram-{clean_sid}.jsonl") or fname.endswith(f"{clean_sid}.jsonl"):
+                            try:
+                                os.remove(os.path.join(root, fname))
+                                logger.info(f"Removed Pi agent session file: {fname}")
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning(f"Failed to clean Pi agent session files for {session_id}: {e}")
 
     # ---------------------------------------------------------
     # ReAct / Tool-Calling Reasoning Loop
@@ -692,8 +744,9 @@ class MaintenanceAgent:
 
     def ask(self, user_question: str, session_id: Optional[str] = None) -> str:
         """
-        Processes user question through dynamic tool-calling and continuous session memory.
-        Returns detailed, diagnostic answer formatted in Telegram HTML.
+        Processes user question through Pi Coding Agent CLI (if available) with automated
+        fallback models, or falls back to built-in ReAct loop.
+        Returns detailed, diagnostic answer formatted for Telegram.
         """
         # Session context
         if session_id:
@@ -702,6 +755,32 @@ class MaintenanceAgent:
             session = SessionContext(session_id="ephemeral")
 
         session.add_user_message(f"負責人問題：{user_question}")
+
+        # Check if Pi CLI is available on the system
+        pi_bin = shutil.which("pi") or ("/usr/bin/pi" if os.path.exists("/usr/bin/pi") else None)
+        if pi_bin and not getattr(self, "_force_builtin_react", False):
+            logger.info("Delegating maintenance question to host Pi Coding Agent CLI...")
+            pi_system_prompt = (
+                "你是 GVW 智能選股系統 (gvw_screener) 樹莓派主機的運維工程師 (SRE & Maintenance Copilot)。\n"
+                f"專案目錄在目前工作目錄 ({PROJECT_ROOT})；systemd 使用者服務為 `gvw_bot`。\n"
+                "你的任務是自主找出並排查資料缺失、排程異常、服務故障、硬體資源或外部 API 限流問題。\n"
+                "你可以使用 bash 或 read 工具直接查證主機現況（如 ps, free, df, uptime, systemctl --user status gvw_bot, logs, sqlite3 等），"
+                "並直接以繁體中文提供清晰、專業、精簡的診斷分析報告（包含：結論與現況、已查證項目、後續建議）。\n"
+                "嚴格禁止執行刪除檔案、格式化或重新開機等破壞性操作，不可讀取或洩漏任何敏感金鑰或憑證。"
+            )
+            pi_res = self.tool_pi_agent(
+                prompt=user_question,
+                timeout=120,
+                session_id=session_id,
+                append_system_prompt=pi_system_prompt,
+            )
+            if pi_res.get("success") and pi_res.get("output"):
+                answer = pi_res["output"].strip()
+                session.add_assistant_message(answer)
+                return answer
+            logger.warning(
+                f"Pi Agent execution failed ({pi_res.get('error', 'unknown')}), falling back to built-in ReAct loop..."
+            )
 
         tools_doc = self.registry.generate_prompt_documentation()
         system_prompt = (
