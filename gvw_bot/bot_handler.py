@@ -198,7 +198,7 @@ class TelegramBotHandler:
         self.maintenance_mode_chats: set = set()
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
         self.pending_feedback_note_chats: Dict[Union[int, str], int] = {}
-        self.last_bot_replies: Dict[Union[int, str], str] = {}
+        self.last_bot_replies: Dict[Union[int, str], List[str]] = {}
         self.last_user_inputs: Dict[Union[int, str], str] = {}
 
     def send_message(
@@ -211,7 +211,10 @@ class TelegramBotHandler:
         track_reply: bool = True,
     ) -> bool:
         if track_reply and text and not text.startswith(("⏳", "🔍 正在", "🔄 正在", "📝 <b>已收到您的問題回報")):
-            self.last_bot_replies[chat_id] = text
+            history = self.last_bot_replies.setdefault(chat_id, [])
+            history.append(text)
+            if len(history) > 3:
+                del history[:-3]
         if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
@@ -462,12 +465,13 @@ class TelegramBotHandler:
 
         elif cmd == "/feedback":
             note_arg = text.split(maxsplit=1)[1].strip() if text.startswith("/") and len(text.split(maxsplit=1)) > 1 else ""
-            last_reply = self.last_bot_replies.get(chat_id, "")
+            raw_replies = self.last_bot_replies.get(chat_id, [])
+            replies_list = list(raw_replies[-3:]) if isinstance(raw_replies, list) else ([raw_replies] if raw_replies else [])
             last_input = self.last_user_inputs.get(chat_id, "")
-            if not last_reply and not note_arg:
+            if not replies_list and not note_arg:
                 self.send_message(
                     chat_id,
-                    "ℹ️ 目前尚無上一則機器人回覆記錄可引用；您可直接輸入 <code>/feedback 問題描述</code> 回報問題。",
+                    "ℹ️ 目前尚無機器人回覆記錄可引用；您可直接輸入 <code>/feedback 問題描述</code> 回報問題。",
                     user_id=user_id,
                     track_reply=False,
                 )
@@ -476,17 +480,22 @@ class TelegramBotHandler:
             entry = self.feedback_store.add_report(
                 chat_id=chat_id,
                 user_id=user_id if user_id is not None else chat_id,
-                bot_reply=last_reply,
+                bot_reply=replies_list[-1] if replies_list else "",
+                bot_replies=replies_list,
                 user_input=last_input,
                 note=note_arg,
             )
-            snippet = last_reply.strip().replace("\n", " ")[:80] if last_reply else "（無前則回覆）"
+            snippet_lines = []
+            for idx, r_text in enumerate(entry.get("bot_replies", []), start=1):
+                short_r = r_text.strip().replace("\n", " ")[:60]
+                snippet_lines.append(f"  {idx}. <code>{html.escape(short_r)}...</code>")
+            snippets_block = "\n".join(snippet_lines) if snippet_lines else "  （無前則回覆）"
             self.send_message(
                 chat_id,
                 f"📝 <b>已收到您的問題回報（編號 #{entry['id']}）</b>\n\n"
-                f"• <b>已引用前則回覆</b>：<code>{html.escape(snippet)}...</code>\n"
+                f"• <b>已自動記錄最近 {len(entry.get('bot_replies', []))} 筆回覆內容</b>：\n{snippets_block}\n"
                 + (f"• <b>補充說明</b>：<code>{html.escape(note_arg)}</code>\n" if note_arg else "")
-                + "\n系統將於<b>自我巡檢</b>時自動彙整此回報，並評估是否可直接自動修復（如重抓缺漏資料、切換備援模型）或建立 GitHub Issue 追蹤修復。",
+                + "\n待<b>自我巡檢</b>時，將由自主機器人整理並評估是要開立 GitHub Issue 或是可直接修復的問題。",
                 user_id=user_id,
                 track_reply=False,
             )

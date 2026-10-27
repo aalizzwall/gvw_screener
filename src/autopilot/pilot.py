@@ -160,12 +160,86 @@ class AutoPilot:
         feedback_results = self.triage_feedback_reports()
         return {"issues": issues, "actions": actions, "escalated": escalated, "feedback": feedback_results}
 
+    def _evaluate_feedback_via_agent(self, rep: Dict[str, Any], replies_list: List[str]) -> Optional[Dict[str, str]]:
+        """
+        Uses the autonomous AI agent/LLM to evaluate the last 3 bot replies in the feedback report
+        and decide whether the issue can be directly auto-fixed ("refresh_stock" / "ai_failover")
+        or requires opening a GitHub Issue ("open_issue").
+        """
+        try:
+            from src.analysis.ai_analyst import _PROVIDERS, _provider_key, _resolve_model, _request_completion
+            from src.analysis.model_prober import get_intra_provider_pool
+
+            store = getattr(self.doctor, "ai_provider_store", None)
+            if store is None or not hasattr(store, "get_chain"):
+                return None
+
+            chain = store.get_chain()
+            if not isinstance(chain, list) or not chain:
+                return None
+            local_url = store.get_local_base_url() if hasattr(store, "get_local_base_url") else ""
+
+            replies_formatted = "\n\n".join(
+                f"【倒數第 {len(replies_list) - i} 筆回覆】:\n{r}"
+                for i, r in enumerate(replies_list)
+            )
+            prompt = (
+                "你是 GVW 智能選股系統的自主巡檢機器人 (AutoPilot Agent)。\n"
+                "請根據以下使用者回報的「最近 3 筆機器人回覆內容」與上下文，評估該問題屬於哪一類：\n"
+                "1. `refresh_stock`：特定個股行情、財報、本益比/淨值比/殖利率資料缺漏或過期，可直接強制重抓該個股資料修復。\n"
+                "2. `ai_failover`：AI 模型連線失敗 (429/503/timeout)、思考耗盡 Token 或未設定，可直接執行 AI 備援切換與健康重整修復。\n"
+                "3. `open_issue`：屬於程式碼邏輯錯誤、排版格式問題 (如 Markdown 未轉粗體) 或需修改程式，應開立 GitHub Issue。\n\n"
+                f"- 使用者輸入：{rep.get('user_input') or '無'}\n"
+                f"- 補充說明：{rep.get('note') or '無'}\n"
+                f"- 偵測個股代碼：{rep.get('ticker') or '無'}\n"
+                f"- 最近回覆記錄（最多 3 筆）：\n{replies_formatted}\n\n"
+                "請只回傳合法 JSON 格式：\n"
+                '{"decision": "refresh_stock|ai_failover|open_issue", "ticker": "4-6位數代號或空字串", "reason": "簡短繁體中文原因與標題"}'
+            )
+
+            for entry in chain:
+                name, model = entry.split("/", 1) if "/" in entry else (entry, "")
+                if name not in _PROVIDERS:
+                    continue
+                key = _provider_key(name, local_base_url=local_url)
+                if not key:
+                    continue
+                pool = get_intra_provider_pool(name, key, local_base_url=local_url, preferred_model=model)
+                for cand in pool:
+                    try:
+                        actual_model = _resolve_model(name, cand, local_base_url=local_url)
+                        raw = _request_completion(
+                            name, key, actual_model, [{"role": "user", "content": prompt}], max_tokens=256
+                        )
+                        start = raw.find("{")
+                        end = raw.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            parsed = json.loads(raw[start : end + 1])
+                            if isinstance(parsed, dict) and parsed.get("decision") in (
+                                "refresh_stock",
+                                "ai_failover",
+                                "open_issue",
+                            ):
+                                return {
+                                    "decision": str(parsed["decision"]),
+                                    "ticker": str(parsed.get("ticker") or rep.get("ticker") or "").strip(),
+                                    "reason": str(parsed.get("reason") or "").strip(),
+                                }
+                    except Exception:
+                        # Fallback to local heuristic rules if AI provider call fails
+                        continue
+        except Exception:
+            # Skip AI agent evaluation if provider modules are unavailable
+            return None
+        return None
+
     def triage_feedback_reports(self) -> List[Dict[str, Any]]:
         """
-        Evaluates user-reported faulty replies during self-patrol:
-        1. Missing / stale / zero valuation data for a stock -> auto-refreshes ticker via Orchestrator.
-        2. AI provider failure / timeout / truncation -> triggers AI health check & provider failover.
-        3. Code / formatting / logic bugs -> deduplicates and opens a GitHub Issue.
+        Evaluates user-reported faulty replies (capturing the last 3 bot replies) during self-patrol:
+        1. Autonomous Agent / LLM + rule evaluation determines whether the issue is directly fixable or needs a GitHub Issue.
+        2. Missing / stale / zero valuation data for a stock -> auto-refreshes ticker via Orchestrator.
+        3. AI provider failure / timeout / truncation -> triggers AI health check & provider failover.
+        4. Code / formatting / logic bugs -> deduplicates and opens a GitHub Issue.
         """
         pending = self.feedback_store.pending_reports()
         if not pending:
@@ -177,43 +251,66 @@ class AutoPilot:
         for rep in pending:
             rep_id = rep.get("id", 0)
             bot_reply = str(rep.get("bot_reply", ""))
+            raw_replies = rep.get("bot_replies")
+            replies_list = (
+                [str(r) for r in raw_replies if str(r).strip()]
+                if isinstance(raw_replies, list) and raw_replies
+                else ([bot_reply] if bot_reply else [])
+            )[-3:]
             user_input = str(rep.get("user_input", ""))
             note = str(rep.get("note", ""))
             ticker = str(rep.get("ticker", ""))
-            combined = f"{user_input}\n{bot_reply}\n{note}"
+            combined = f"{user_input}\n" + "\n".join(replies_list) + f"\n{note}"
 
-            # Case 1: Stock data missing or valuation indicators are N/A / 0
-            is_data_issue = bool(ticker) and any(
-                kw in combined
-                for kw in (
-                    "尚無已採集資料",
-                    "本益比 (P/E)：0.0",
-                    "股價淨值比 (P/B)：0",
-                    "最新收盤：N/A",
-                    "資料缺漏",
-                    "缺漏",
-                    "空白",
-                    "無資料",
-                )
-            )
-            # Case 2: AI provider failure / rate limit / incomplete reasoning
-            is_ai_issue = any(
-                kw in combined
-                for kw in (
-                    "分析請求失敗",
-                    "429",
-                    "503",
-                    "Peer count",
-                    "Industry Avg",
-                    "尚未設定",
-                    "耗盡 Token",
-                )
-            )
+            # 1. Autonomous evaluation via AI Agent if configured, with deterministic fallback
+            agent_eval = self._evaluate_feedback_via_agent(rep, replies_list)
+            decision = agent_eval.get("decision") if agent_eval else None
+            eval_reason = agent_eval.get("reason") if agent_eval else ""
+            if agent_eval and agent_eval.get("ticker") and not ticker:
+                ticker = agent_eval["ticker"]
 
-            if is_data_issue and ticker:
+            if not decision:
+                is_code_or_format_bug = any(
+                    kw in combined for kw in ("**", "粗體", "語法", "排版", "格式", "按鈕", "Traceback")
+                )
+                is_data_issue = bool(ticker) and not is_code_or_format_bug and any(
+                    kw in combined
+                    for kw in (
+                        "尚無已採集資料",
+                        "本益比 (P/E)：0.0",
+                        "股價淨值比 (P/B)：0",
+                        "最新收盤：N/A",
+                        "資料缺漏",
+                        "缺漏",
+                        "空白",
+                        "無資料",
+                    )
+                )
+                is_ai_issue = not is_code_or_format_bug and any(
+                    kw in combined
+                    for kw in (
+                        "分析請求失敗",
+                        "429",
+                        "503",
+                        "Peer count",
+                        "Industry Avg",
+                        "尚未設定",
+                        "耗盡 Token",
+                    )
+                )
+                if is_data_issue:
+                    decision = "refresh_stock"
+                elif is_ai_issue:
+                    decision = "ai_failover"
+                else:
+                    decision = "open_issue"
+
+            if decision == "refresh_stock" and ticker:
                 try:
                     self.orchestrator.update_stock(ticker, force=True)
                     resolution = f"已自動重新強制採集 {ticker} 行情與財務估值資料"
+                    if eval_reason:
+                        resolution += f"（評估：{eval_reason}）"
                     self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
                     self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
                     summary_lines.append(f"• <b>回報 #{rep_id} ({ticker})</b>：🛠️ 可直接修復 ➔ {resolution}")
@@ -222,7 +319,7 @@ class AutoPilot:
                 except Exception as exc:
                     logger.warning("Auto-fix stock refresh failed for feedback #%s: %s", rep_id, exc)
 
-            if is_ai_issue:
+            if decision == "ai_failover":
                 try:
                     rem_actions = self.doctor.run_remediation(light=True)
                     real_rem = [a for a in rem_actions if "無須" not in a]
@@ -231,6 +328,8 @@ class AutoPilot:
                         if real_rem
                         else "已執行 AI 備援鏈路健康檢查與狀態重整"
                     )
+                    if eval_reason:
+                        resolution += f"（評估：{eval_reason}）"
                     self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
                     self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
                     summary_lines.append(f"• <b>回報 #{rep_id}</b>：🛠️ 可直接修復 ➔ {resolution}")
@@ -243,17 +342,27 @@ class AutoPilot:
             sig_seed = re.sub(r"\s+", " ", (note or user_input or bot_reply[:120])).strip()
             sig_hash = hashlib.sha1(sig_seed.encode("utf-8", errors="ignore")).hexdigest()[:10]
             signature = f"user-feedback:{sig_hash}"
-            title_snippet = (note or user_input or bot_reply.splitlines()[0] if bot_reply else "異常回覆")[:50]
+            title_snippet = (
+                eval_reason
+                or note
+                or user_input
+                or (bot_reply.splitlines()[0] if bot_reply else "異常回覆")
+            )[:50]
             issue_title = f"使用者回報異常：{title_snippet}"
+            replies_markdown = "\n\n".join(
+                f"**回覆 #{idx}**\n```text\n{r[:1200]}\n```"
+                for idx, r in enumerate(replies_list, start=1)
+            )
             issue_body = (
                 f"### 使用者問題回報 (#{rep_id})\n"
                 f"- **回報時間**：`{rep.get('created_at')}`\n"
                 f"- **使用者輸入**：`{user_input or '無'}`\n"
                 f"- **補充說明**：`{note or '無'}`\n"
-                f"- **相關個股**：`{ticker or '無'}`\n\n"
-                f"#### 機器人原始回覆內容\n"
-                f"```text\n{bot_reply[:2500]}\n```\n\n"
-                "經自主巡檢評估無法僅靠重抓資料或切換備援解決，建立 Issue 追蹤修復。"
+                f"- **相關個股**：`{ticker or '無'}`\n"
+                + (f"- **自主巡檢評估**：`{eval_reason}`\n" if eval_reason else "")
+                + f"\n#### 機器人最近 {len(replies_list)} 筆回覆內容\n"
+                f"{replies_markdown}\n\n"
+                "經自主巡檢機器人評估無法僅靠重抓資料或切換備援解決，建立 Issue 追蹤修復。"
             )
             try:
                 created, url = self.doctor.report_unresolved_issue(

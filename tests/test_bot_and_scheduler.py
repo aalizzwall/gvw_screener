@@ -1046,7 +1046,7 @@ class TestBotAndScheduler(unittest.TestCase):
             bot._answer_callback_query.assert_called_once_with("cb-policy-1", "已套用：⚡ OpenAI 優先階梯")
             self.assertIn("OpenAI 優先階梯", bot.send_message.call_args[0][1])
 
-    def test_feedback_button_captures_previous_bot_reply_and_user_input(self):
+    def test_feedback_button_captures_previous_three_bot_replies_and_user_input(self):
         from src.state.feedback_queue import FeedbackQueueStore
         with tempfile.TemporaryDirectory() as temp_dir:
             fb_store = FeedbackQueueStore(f"{temp_dir}/feedback.json")
@@ -1054,14 +1054,21 @@ class TestBotAndScheduler(unittest.TestCase):
             response = Mock(status_code=200)
 
             with patch("gvw_bot.bot_handler.requests.post", return_value=response):
-                bot.handle_command(123, "2330", "2330", user_id=123, chat_type="private")
+                bot.send_message(123, "第一筆回覆：請輸入代號")
+                bot.send_message(123, "第二筆回覆：📊 2330 台積電 基本資料")
+                bot.send_message(123, "第三筆回覆：🤖 2330 AI 評估結果")
+                bot.last_user_inputs[123] = "2330"
                 bot.handle_command(123, "⚠️ 問題回報", "⚠️ 問題回報", user_id=123, chat_type="private")
 
             pending = fb_store.pending_reports()
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["user_input"], "2330")
             self.assertEqual(pending[0]["ticker"], "2330")
-            self.assertIn("2330", pending[0]["bot_reply"])
+            self.assertEqual(len(pending[0]["bot_replies"]), 3)
+            self.assertIn("第一筆回覆", pending[0]["bot_replies"][0])
+            self.assertIn("第二筆回覆", pending[0]["bot_replies"][1])
+            self.assertIn("第三筆回覆", pending[0]["bot_replies"][2])
+            self.assertIn("第三筆回覆", pending[0]["bot_reply"])
 
 if __name__ == "__main__":
     unittest.main()

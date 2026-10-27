@@ -9,7 +9,7 @@ from src.config import FEEDBACK_QUEUE_FILE
 
 class FeedbackQueueStore:
     """
-    Persists user-submitted error reports (capturing the preceding bot response and user context)
+    Persists user-submitted error reports (capturing the last 3 bot replies and user context)
     and tracks their triage status for self-patrol (AutoPilot) evaluation.
     """
 
@@ -20,14 +20,23 @@ class FeedbackQueueStore:
         self,
         chat_id: Any,
         user_id: Any,
-        bot_reply: str,
+        bot_reply: str = "",
         user_input: str = "",
         note: str = "",
+        bot_replies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         data = self._load()
         reports = data.get("reports", [])
         report_id = len(reports) + 1
-        ticker_match = re.search(r"\b(\d{4,6})\b", f"{user_input} {bot_reply}")
+
+        replies_list = [
+            str(r).strip()[:2000]
+            for r in (bot_replies if bot_replies is not None else ([bot_reply] if bot_reply else []))
+            if str(r).strip()
+        ][-3:]
+        latest_reply = replies_list[-1] if replies_list else str(bot_reply or "").strip()[:2000]
+        combined_text = f"{user_input} " + " ".join(replies_list)
+        ticker_match = re.search(r"\b(\d{4,6})\b", combined_text)
         detected_ticker = ticker_match.group(1) if ticker_match else ""
 
         entry = {
@@ -36,7 +45,8 @@ class FeedbackQueueStore:
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "user_input": str(user_input or "").strip()[:500],
-            "bot_reply": str(bot_reply or "").strip()[:3500],
+            "bot_reply": latest_reply,
+            "bot_replies": replies_list,
             "note": str(note or "").strip()[:1000],
             "ticker": detected_ticker,
             "status": "pending",
