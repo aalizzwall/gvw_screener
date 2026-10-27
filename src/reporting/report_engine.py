@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, Any, Optional
 import pandas as pd
 from src.state.interfaces import IStateRepository
@@ -139,5 +140,15 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
             t = row['ticker']
             price_range = get_suggested_price(t, state_manager=state)
             lines.append(f"{i}. {row.get('name', t)} ({t}) | 區間: {price_range}\n")
+
+    try:
+        # Imported lazily: autopilot depends on the ranker, keep report generation free of import cycles.
+        from src.autopilot.ledger import RecommendationLedger, format_performance_section
+
+        data_dir = getattr(state, "data_dir", None)
+        ledger_path = os.path.join(data_dir, "recommendations.json") if data_dir else None
+        lines.append(format_performance_section(RecommendationLedger(state, path=ledger_path).summary()))
+    except Exception as e:  # performance block is informational; never break the report
+        logger.warning(f"Skipping performance section: {e}")
 
     return "".join(lines)

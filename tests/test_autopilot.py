@@ -50,6 +50,35 @@ class TestLedger(unittest.TestCase):
         self.ledger.record(self.ranks, as_of="2026-10-30")
         self.assertEqual(self.ledger.evaluate(), 0)
 
+    def test_excess_return_vs_benchmark_and_report_section(self):
+        from src.autopilot.benchmark import BenchmarkSeries
+        from src.autopilot.ledger import format_performance_section
+
+        bench = BenchmarkSeries(path=os.path.join(self.tmp.name, "bench.json"))
+        for i, d in enumerate(_days(30)):
+            bench.closes[d] = 1000 * (1.002 ** i)  # market +0.2%/day
+        self.ledger.record(self.ranks, as_of="2026-10-05")
+        self.ledger.evaluate(bench)
+        s = self.ledger.summary()["horizons"][1]
+        self.assertEqual(s["n_excess"], 2)
+        self.assertAlmostEqual(s["avg_excess"], -0.002, places=4)  # avg raw 0% minus market +0.2%
+        self.assertEqual(s["beat_rate"], 0.5)
+        text = format_performance_section(self.ledger.summary())
+        self.assertIn("相對大盤", text)
+        self.assertEqual(format_performance_section({"horizons": {1: {"n": 0}}}), "")
+
+    def test_benchmark_ingests_twse_snapshot_and_computes_return(self):
+        from src.autopilot.benchmark import BenchmarkSeries
+
+        b = BenchmarkSeries(path=os.path.join(self.tmp.name, "b.json"))
+        snap = {"stats": [{"日期": "1151022", "指數": "發行量加權股價指數", "收盤指數": "46,041.43"}]}
+        self.assertTrue(b.ingest_market_index(snap))
+        self.assertEqual(b.closes["2026-10-22"], 46041.43)
+        b.closes["2026-10-23"] = 46041.43 * 1.01
+        self.assertAlmostEqual(b.ret("2026-10-22", "2026-10-23"), 0.01)
+        self.assertIsNone(b.ret("2026-10-22", "2026-12-01"))
+        self.assertFalse(b.ingest_market_index({}))
+
     def test_propose_weights_needs_samples(self):
         self.ledger.record(self.ranks, as_of="2026-10-05")
         self.ledger.evaluate()

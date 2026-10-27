@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+from src.autopilot.benchmark import BenchmarkSeries
 from src.autopilot.ledger import RecommendationLedger
 from src.config import DATA_DIR, TELEGRAM_OWNER_USER_ID
 from src.reporting.telegram_notifier import send_telegram_message
@@ -42,6 +43,7 @@ class AutoPilot:
         self.ranking_fn = ranking_fn
         self.data_dir = data_dir or DATA_DIR
         self.ledger = RecommendationLedger(state, path=os.path.join(self.data_dir, "recommendations.json"))
+        self.benchmark = BenchmarkSeries(path=os.path.join(self.data_dir, "benchmark.json"))
         self._notify = notify or send_telegram_message
         self._last_alert: Dict[str, float] = {}
         self._streak: Dict[str, int] = {}
@@ -210,8 +212,9 @@ class AutoPilot:
 
     def postmarket_review(self) -> Dict[str, Any]:
         """After ranking: log picks, score past picks, maybe propose tuning, send one digest."""
+        self.benchmark.update(self.state.get_market_index())
         recorded = self.ledger.record(self.state.get_ranks())
-        filled = self.ledger.evaluate()
+        filled = self.ledger.evaluate(self.benchmark)
         summary = self.ledger.summary()
         self._record(f"回測：記錄今日 {recorded} 檔推薦，新增 {filled} 筆已實現報酬")
         proposal = None
@@ -241,7 +244,10 @@ class AutoPilot:
         if measured:
             lines.append("📊 <b>歷史推薦績效（Top 50 實測）</b>")
             for k, v in measured:
-                lines.append(f"• T+{k}：勝率 <code>{v['win_rate']:.0%}</code>，平均報酬 <code>{v['avg_return']:+.2%}</code>（n={v['n']}）")
+                line = f"• T+{k}：勝率 <code>{v['win_rate']:.0%}</code>，平均報酬 <code>{v['avg_return']:+.2%}</code>（n={v['n']}）"
+                if v.get("n_excess"):
+                    line += f"；相對大盤 <code>{v['avg_excess']:+.2%}</code>，贏大盤 <code>{v['beat_rate']:.0%}</code>"
+                lines.append(line)
         else:
             lines.append("📊 回測資料累積中（需數個交易日才有 T+1/T+5 結果）")
         lines += ["", "🛠️ <b>今日自主處理紀錄</b>"]
