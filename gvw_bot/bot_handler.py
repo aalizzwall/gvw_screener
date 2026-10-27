@@ -44,35 +44,19 @@ from src.state.state_manager import StateManager
 logger = logging.getLogger("gvw.bot")
 
 BOT_COMMANDS = [
-    {"command": "report", "description": "查看 GVW 選股報告與 Top 10"},
-    {"command": "toggle_monitor", "description": "開啟或關閉盤中突破即時推播"},
-    {"command": "status", "description": "查看服務狀態"},
-    {"command": "monitor", "description": "執行盤中信號掃描"},
-    {"command": "collect", "description": "手動採集股票資料"},
-    {"command": "rank", "description": "重新計算股票排名"},
-    {"command": "jobs", "description": "查看排程任務"},
-    {"command": "ai", "description": "AI 智慧控制中心（自動強度階梯與健康檢測）"},
-    {"command": "analyze", "description": "使用 AI 評估個股，例如 /analyze 2330"},
-    {"command": "request_ai", "description": "申請使用 AI 個股分析"},
-    {"command": "ai_requests", "description": "審核 AI 分析使用申請"},
-    {"command": "ai_status", "description": "查看 AI provider/model 順序"},
-    {"command": "ai_models", "description": "列出可選的 AI provider/model"},
-    {"command": "ai_set", "description": "設定順序，例如 /ai_set openai/gpt-4o gemma/gemma-3-27b-it"},
-    {"command": "ai_add", "description": "加入 provider/model，可指定位置"},
-    {"command": "ai_remove", "description": "移除 provider/model 或序號"},
-    {"command": "ai_check", "description": "檢測可用性並將可用者排前面"},
-    {"command": "ai_local", "description": "查看或設定地端 LM-Studio 端點 URL"},
-    {"command": "update", "description": "一鍵從 GitHub 拉取最新代碼並重啟服務"},
-    {"command": "doctor", "description": "系統全方位健康診斷，/doctor fix 可執行自愈"},
-    {"command": "fix", "description": "自主修復指定 Issue，例如 /fix #28"},
-    {"command": "maintain", "description": "切換系統維護模式，可直接用自然語言診斷資料與除錯"},
+    {"command": "report", "description": "查看最新選股日報與全市場 Top 10"},
+    {"command": "analyze", "description": "AI 個股深度評估（例如 /analyze 2330）"},
+    {"command": "monitor", "description": "盤中即時突破信號掃描與推播開關"},
+    {"command": "maintain", "description": "切換維護模式，自然語言診斷與修復"},
+    {"command": "status", "description": "系統服務狀態、排程任務與健康管理"},
+    {"command": "ai", "description": "AI 智慧控制中心（模型順序、健康檢測、地端設定）"},
+    {"command": "update", "description": "一鍵從 GitHub 更新並重啟服務"},
+    {"command": "help", "description": "查看完整使用指南與指令說明"},
 ]
 
 PUBLIC_COMMANDS = [
     {"command": "start", "description": "開始使用 / 叫出功能按鈕"},
-    {"command": "report", "description": "查看最新 GVW 選股日報與 Top 10"},
-    {"command": "top10", "description": "查看目前全市場評分 Top 10 標的"},
-    {"command": "toggle_monitor", "description": "開啟或關閉盤中即時突破通知"},
+    {"command": "report", "description": "查看最新選股日報與 Top 10"},
     {"command": "analyze", "description": "個股深度 AI 評估（需申請）"},
     {"command": "help", "description": "查看使用指南與指令說明"},
 ]
@@ -329,19 +313,28 @@ class TelegramBotHandler:
             return
 
         if cmd in ["/start", "/help"]:
+            is_owner = self._is_owner(user_id)
             msg = (
                 "🤖 <b>GVW Screener 智能選股機器人</b>\n\n"
-                "本機器人已內建自動排程引擎，定時執行採集、選股與推播：\n"
+                "本機器人內建自主排程引擎，定時執行採集、選股與推播：\n"
                 "• 08:30 晨間速報\n"
                 "• 09:00-13:30 盤中突破即時監控 (每10分鐘)\n"
                 "• 14:00 盤後全市場數據採集\n"
                 "• 15:00 全局 GVW 評分排名\n"
                 "• 15:30 盤後篩選總結日報\n\n"
-                "<b>三大核心功能（可直接點擊下方鍵盤按鈕）：</b>\n"
-                "1. 🏆 <b>Top 10 選股</b>：隨時查看最新全市場 GVW Top 10 核心優質標的\n"
-                "2. 🔔 <b>盤中監控</b> / 🔕 <b>盤中監控</b>：開啟或關閉推播，當 Top 30 核心標的同時通過「分時三步法」突破信號時主動通知\n"
-                "3. 🤖 <b>AI 個股分析</b> / 📝 <b>申請 AI 分析</b>：對個股進行基本面、動能與價量 AI 深度評估\n"
+                "<b>📈 核心功能（可直接點擊下方鍵盤按鈕）：</b>\n"
+                "• 🏆 <b>Top 10 選股</b> (<code>/report</code>)：查看最新全市場 GVW Top 10 核心優質標的\n"
+                "• 🔔 <b>盤中監控</b> (<code>/monitor</code>)：即時掃描信號或開關推播通知\n"
+                "• 🤖 <b>AI 個股分析</b> (<code>/analyze 2330</code>)：基本面、動能與價量 AI 深度評估\n"
             )
+            if is_owner:
+                msg += (
+                    "\n🛠️ <b>系統管理與運維指令（負責人專用）：</b>\n"
+                    "• <code>/maintain</code>：切換系統維護模式（自然語言自主排查主機、日誌與資料庫）\n"
+                    "• <code>/status</code>：服務運行狀態、排程任務管理與健康診斷面板\n"
+                    "• <code>/ai</code>：AI 智慧控制中心（視覺化調整模型順序、健康檢測、地端設定）\n"
+                    "• <code>/update</code>：一鍵從 GitHub 拉取最新代碼並重啟服務\n"
+                )
             self.send_message(chat_id, msg, user_id=user_id)
 
         elif cmd in ["/report", "/today", "/top10"]:
@@ -373,15 +366,37 @@ class TelegramBotHandler:
             hrs = uptime // 3600
             mins = (uptime % 3600) // 60
 
+            scheduler_summary = "未載入"
+            if self.scheduler and hasattr(self.scheduler, "jobs"):
+                job_count = len(self.scheduler.jobs)
+                running_jobs = sum(1 for j in self.scheduler.jobs if getattr(j, "is_running", False))
+                scheduler_summary = f"{job_count} 項任務 (執行中: {running_jobs})"
+
             status_text = (
                 f"📊 <b>GVW Bot 服務運行狀態</b>\n\n"
-                f"• 狀態：<code>{'正常運行中 ✅' if health_info.get('healthy') else '異常 ⚠️'}</code>\n"
+                f"• 服務狀態：<code>{'正常運行中 ✅' if health_info.get('healthy') else '異常 ⚠️'}</code>\n"
                 f"• 程序 PID：<code>{data.get('pid', 'N/A')}</code>\n"
                 f"• 運行時間：<code>{hrs}小時 {mins}分鐘</code>\n"
-                f"• 最後心跳：<code>{data.get('last_heartbeat', 'N/A')}</code>\n\n"
-                "💡 hermes-agent 可透過讀取 <code>gvw_bot/heartbeat.json</code> 進行監控。"
+                f"• 最後心跳：<code>{data.get('last_heartbeat', 'N/A')}</code>\n"
+                f"• 定時排程：<code>{scheduler_summary}</code>\n\n"
+                "👇 <b>快捷管理操作：</b>"
             )
-            self.send_message(chat_id, status_text)
+            buttons = [
+                [
+                    {"text": "⏰ 查看詳細排程", "callback_data": "status_jobs"},
+                    {"text": "🩺 執行健康診斷", "callback_data": "status_doctor"},
+                ],
+                [
+                    {"text": "📥 手動採集資料", "callback_data": "status_collect"},
+                    {"text": "📈 重新計算排名", "callback_data": "status_rank"},
+                ],
+            ]
+            self.send_message(
+                chat_id,
+                status_text,
+                reply_markup={"inline_keyboard": buttons},
+                user_id=user_id,
+            )
 
         elif cmd == "/jobs":
             if not self.scheduler:
@@ -1169,6 +1184,30 @@ class TelegramBotHandler:
         # 2. Owner-only admin callbacks
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
+            return
+
+        if data == "status_jobs":
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "正在載入排程清單...")
+            self.handle_command(chat_id, "/jobs", "/jobs", user_id=actor_id)
+            return
+
+        if data == "status_doctor":
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "正在執行健康診斷...")
+            self.handle_command(chat_id, "/doctor", "/doctor", user_id=actor_id)
+            return
+
+        if data == "status_collect":
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "已觸發數據採集...")
+            self.handle_command(chat_id, "/collect", "/collect", user_id=actor_id)
+            return
+
+        if data == "status_rank":
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, "正在重新計算排名...")
+            self.handle_command(chat_id, "/rank", "/rank", user_id=actor_id)
             return
 
         if data.startswith("ai_policy:"):
