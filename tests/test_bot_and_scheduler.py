@@ -78,7 +78,11 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertTrue(any("setMyCommands" in u for u in urls))
         owner_payload = next(c.kwargs["json"] for c in calls if "setMyCommands" in c.args[0])
         self.assertEqual(owner_payload["scope"], {"type": "chat", "chat_id": 123})
-        self.assertIn("collect", [command["command"] for command in owner_payload["commands"]])
+        registered_cmds = [command["command"] for command in owner_payload["commands"]]
+        self.assertIn("maintain", registered_cmds)
+        self.assertIn("status", registered_cmds)
+        self.assertIn("report", registered_cmds)
+        self.assertIn("ai", registered_cmds)
 
     def test_polling_routes_keyboard_button_text(self):
         bot = TelegramBotHandler(token="test-token")
@@ -697,6 +701,30 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("intraday_monitor", msg)
         self.assertIn("daily_collection", msg)
         self.assertIn("尚未執行", msg)
+
+    def test_status_command_renders_buttons_and_callbacks(self):
+        scheduler = GVWScheduler(heartbeat_mgr=self.hb)
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10", scheduler=scheduler)
+        bot.send_message = Mock()
+        bot._answer_callback_query = Mock()
+
+        bot.handle_command(10, "/status", "/status", user_id=10)
+        bot.send_message.assert_called_once()
+        args = bot.send_message.call_args
+        self.assertIn("GVW Bot 服務運行狀態", args.args[1])
+        reply_markup = args.kwargs.get("reply_markup", {})
+        inline_keyboard = reply_markup.get("inline_keyboard", [])
+        self.assertTrue(any(b["callback_data"] == "status_jobs" for row in inline_keyboard for b in row))
+
+        # Test callback query routing
+        bot.handle_command = Mock()
+        bot.handle_callback_query({
+            "id": "cb1",
+            "from": {"id": 10},
+            "message": {"chat": {"id": 10}},
+            "data": "status_jobs",
+        })
+        bot.handle_command.assert_called_with(10, "/jobs", "/jobs", user_id=10)
 
     def test_scheduler_jobs_setup(self):
         scheduler = GVWScheduler(heartbeat_mgr=self.hb)
