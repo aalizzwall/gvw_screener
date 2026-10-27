@@ -1362,7 +1362,7 @@ class TelegramBotHandler:
             report = f"{report}\n\n{disclaimer}"
         self.send_message(
             chat_id,
-            f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{html.escape(report)}",
+            f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{format_telegram_html(report)}",
         )
 
     def _send_stock_lookup(
