@@ -196,6 +196,78 @@ class TestAutoPilot(unittest.TestCase):
         self.assertIn("測試事件", self.notify.call_args.args[0])
         self.assertEqual(self.pilot.events, [])
 
+    def test_triage_feedback_auto_fixes_data_and_ai_or_opens_issue(self):
+        # 1. Data missing report (with 3 recorded bot replies) -> auto_fixed via orchestrator.update_stock
+        self.pilot.feedback_store.add_report(
+            chat_id=100,
+            user_id=100,
+            bot_replies=[
+                "請輸入代號",
+                "📊 台積電 (2330)\n• 本益比 (P/E)：0.0\n• 股價淨值比 (P/B)：0",
+                "建議觀察估值表現",
+            ],
+            user_input="2330",
+        )
+        # 2. AI truncation report -> auto_fixed via doctor.run_remediation
+        self.pilot.feedback_store.add_report(
+            chat_id=100,
+            user_id=100,
+            bot_replies=[
+                "請輸入 4 至 6 位數的台股代碼進行 AI 分析",
+                "): Peer count 96. Industry Avg PE = 53.39",
+            ],
+            user_input="/analyze 2330",
+        )
+        # 3. Code/UI bug report -> escalated to GitHub issue with all 3 replies
+        self.pilot.feedback_store.add_report(
+            chat_id=100,
+            user_id=100,
+            bot_replies=[
+                "第一則回覆",
+                "第二則回覆",
+                "1. **資料概要與期別",
+            ],
+            user_input="/analyze 2330",
+            note="粗體語法沒有轉換",
+        )
+        self.doctor.run_remediation.return_value = ["主力 AI 已自動切換備援"]
+        self.doctor.report_unresolved_issue.return_value = (True, "https://github.com/test/issues/99")
+
+        results = self.pilot.triage_feedback_reports()
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["action"], "auto_fixed")
+        self.orch.update_stock.assert_called_once_with("2330", force=True)
+        self.assertEqual(results[1]["action"], "auto_fixed")
+        self.assertEqual(results[2]["action"], "issue_opened")
+        self.doctor.report_unresolved_issue.assert_called_once()
+        issue_body = self.doctor.report_unresolved_issue.call_args.kwargs["body"]
+        self.assertIn("機器人最近 3 筆回覆內容", issue_body)
+        self.assertIn("回覆 #1", issue_body)
+        self.assertIn("回覆 #3", issue_body)
+        self.assertEqual(self.pilot.feedback_store.pending_reports(), [])
+        self.notify.assert_called_once()
+        self.assertIn("使用者問題回報整理與評估", self.notify.call_args.args[0])
+
+    def test_triage_feedback_uses_autonomous_agent_decision_when_available(self):
+        self.pilot.feedback_store.add_report(
+            chat_id=100,
+            user_id=100,
+            bot_replies=["回覆 1", "回覆 2", "回覆 3 (2454 聯發科估值異常)"],
+            user_input="2454",
+        )
+        with patch.object(
+            self.pilot,
+            "_evaluate_feedback_via_agent",
+            return_value={"decision": "refresh_stock", "ticker": "2454", "reason": "AI 判定 2454 估值資料過期"},
+        ):
+            results = self.pilot.triage_feedback_reports()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "auto_fixed")
+        self.orch.update_stock.assert_called_once_with("2454", force=True)
+        self.assertIn("AI 判定 2454 估值資料過期", results[0]["detail"])
+
 
 class TestRankerWeights(unittest.TestCase):
     def test_defaults_and_invalid_file(self):

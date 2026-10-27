@@ -163,3 +163,6 @@ LOCAL_AI_MODEL = (
 
 # Owner-selected primary AI provider ("openai" or "gemma"); the other is the fallback
 AI_PROVIDER_FILE = os.environ.get("GVW_AI_PROVIDER_FILE", os.path.join(DATA_DIR, "ai_provider.json"))
+
+# User feedback & error report queue for self-patrol triage
+FEEDBACK_QUEUE_FILE = os.environ.get("GVW_FEEDBACK_QUEUE_FILE", os.path.join(DATA_DIR, "feedback_reports.json"))

@@ -321,7 +321,7 @@ class TestBotAndScheduler(unittest.TestCase):
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
                 ["🏆 Top 10 選股", "🔕 盤中監控"],
-                ["📝 申請 AI 分析"],
+                ["📝 申請 AI 分析", "⚠️ 問題回報"],
             ])
 
             # Subscribed regular user
@@ -329,7 +329,7 @@ class TestBotAndScheduler(unittest.TestCase):
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
                 ["🏆 Top 10 選股", "🔔 盤中監控"],
-                ["📝 申請 AI 分析"],
+                ["📝 申請 AI 分析", "⚠️ 問題回報"],
             ])
 
             # Approved user
@@ -338,14 +338,14 @@ class TestBotAndScheduler(unittest.TestCase):
             kb = bot._keyboard_for_chat(20, user_id=20)
             self.assertEqual(kb["keyboard"], [
                 ["🏆 Top 10 選股", "🔔 盤中監控"],
-                ["🤖 AI 個股分析"],
+                ["🤖 AI 個股分析", "⚠️ 問題回報"],
             ])
 
             # Owner
             kb = bot._keyboard_for_chat(10, user_id=10)
             self.assertEqual(kb["keyboard"], [
                 ["🏆 Top 10 選股", "🔕 盤中監控"],
-                ["🤖 AI 個股分析"],
+                ["🤖 AI 個股分析", "⚠️ 問題回報"],
             ])
 
     def test_only_owner_can_decide_an_ai_access_request(self):
@@ -1045,6 +1045,30 @@ class TestBotAndScheduler(unittest.TestCase):
             self.assertEqual(store.get_policy(), "openai")
             bot._answer_callback_query.assert_called_once_with("cb-policy-1", "已套用：⚡ OpenAI 優先階梯")
             self.assertIn("OpenAI 優先階梯", bot.send_message.call_args[0][1])
+
+    def test_feedback_button_captures_previous_three_bot_replies_and_user_input(self):
+        from src.state.feedback_queue import FeedbackQueueStore
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fb_store = FeedbackQueueStore(f"{temp_dir}/feedback.json")
+            bot = TelegramBotHandler(token="test-token", owner_user_id="10", feedback_store=fb_store)
+            response = Mock(status_code=200)
+
+            with patch("gvw_bot.bot_handler.requests.post", return_value=response):
+                bot.send_message(123, "第一筆回覆：請輸入代號")
+                bot.send_message(123, "第二筆回覆：📊 2330 台積電 基本資料")
+                bot.send_message(123, "第三筆回覆：🤖 2330 AI 評估結果")
+                bot.last_user_inputs[123] = "2330"
+                bot.handle_command(123, "⚠️ 問題回報", "⚠️ 問題回報", user_id=123, chat_type="private")
+
+            pending = fb_store.pending_reports()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["user_input"], "2330")
+            self.assertEqual(pending[0]["ticker"], "2330")
+            self.assertEqual(len(pending[0]["bot_replies"]), 3)
+            self.assertIn("第一筆回覆", pending[0]["bot_replies"][0])
+            self.assertIn("第二筆回覆", pending[0]["bot_replies"][1])
+            self.assertIn("第三筆回覆", pending[0]["bot_replies"][2])
+            self.assertIn("第三筆回覆", pending[0]["bot_reply"])
 
 if __name__ == "__main__":
     unittest.main()
