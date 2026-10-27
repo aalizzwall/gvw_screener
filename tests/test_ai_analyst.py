@@ -9,7 +9,6 @@ from src.analysis.model_prober import _PROBE_CACHE
 from src.state.ai_provider import (
     AIProviderPreferenceStore,
     build_strength_fallback_chain,
-    AI_POLICIES,
 )
 from src.state.state_manager import StateManager
 

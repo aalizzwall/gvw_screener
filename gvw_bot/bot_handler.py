@@ -28,7 +28,6 @@ from src.state.ai_provider import (
     model_catalog,
     AI_CHAIN_PRESETS,
     AI_POLICIES,
-    build_strength_fallback_chain,
     parse_entry,
 )
 from src.reporting.report_engine import generate_daily_report, get_financials, get_suggested_price
@@ -963,11 +962,26 @@ class TelegramBotHandler:
             )
             self.send_message(chat_id, msg)
 
-            venv_pip = os.path.join(parent_dir, ".venv", "bin", "pip")
             req_file = os.path.join(parent_dir, "requirements.txt")
-            if os.path.exists(venv_pip) and os.path.exists(req_file):
-                logger.info("Updating dependencies via pip in .venv...")
-                subprocess.run([venv_pip, "install", "-r", req_file], timeout=90, cwd=parent_dir)
+            if os.path.exists(req_file):
+                python_candidates = [
+                    sys.executable,
+                    os.path.join(parent_dir, ".venv", "bin", "python"),
+                    os.path.join(parent_dir, ".venv", "bin", "python3"),
+                ]
+                py_bin = next((p for p in python_candidates if p and os.path.exists(p)), None)
+                if py_bin:
+                    logger.info(f"Updating dependencies via {py_bin} -m pip...")
+                    try:
+                        subprocess.run(
+                            [py_bin, "-m", "pip", "install", "-r", req_file],
+                            timeout=90,
+                            cwd=parent_dir,
+                            capture_output=True,
+                            text=True,
+                        )
+                    except Exception as pip_err:
+                        logger.warning(f"Dependency installation skipped or failed: {pip_err}")
 
             time.sleep(1.5)
 

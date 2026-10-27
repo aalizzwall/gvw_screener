@@ -74,6 +74,7 @@ class AutoPilot:
             if failed:
                 issues.append(f"systemd 失敗單元：{', '.join(failed[:5])}")
         except Exception:
+            # Ignore systemctl check failure on non-systemd platforms
             pass
         vcgencmd = shutil.which("vcgencmd")
         if vcgencmd:
@@ -85,12 +86,14 @@ class AutoPilot:
                 if value & 0x4:
                     issues.append("CPU 因過熱/電源被降頻 (throttled)")
             except Exception:
+                # Ignore vcgencmd parse or execution failure
                 pass
         try:
             usage = shutil.disk_usage("/var/log")
             if usage.total and usage.used / usage.total > 0.85:
                 issues.append(f"/var/log 使用率 {usage.used * 100 // usage.total}%")
         except Exception:
+            # Ignore /var/log disk usage check failure if directory is unavailable
             pass
         return issues
 

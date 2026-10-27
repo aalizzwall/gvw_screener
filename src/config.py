@@ -64,6 +64,7 @@ def load_pi_agent_config(pi_dir: Optional[str] = None):
                 elif isinstance(openai_entry, str) and openai_entry:
                     os.environ["OPENAI_API_KEY"] = openai_entry
         except Exception:
+            # Ignore errors reading optional pi auth configuration
             pass
 
     # 2. models.json (Local LLM providers / LM-Studio base URL, apiKey, etc.)
@@ -84,6 +85,7 @@ def load_pi_agent_config(pi_dir: Optional[str] = None):
                     if api_key:
                         os.environ["LOCAL_AI_API_KEY"] = api_key
         except Exception:
+            # Ignore errors reading optional pi models configuration
             pass
 
 # Initialize environment variables

@@ -491,6 +491,7 @@ class MaintenanceAgent:
                     parts = f.read().strip().split()
                     load_avg = [float(parts[0]), float(parts[1]), float(parts[2])]
             except Exception:
+                # Ignore /proc/loadavg read errors and keep default zero values
                 pass
 
         cmd = "ps -eo pid,stat,%cpu,%mem,wchan:20,comm,args | grep -E '^[[:space:]]*[0-9]+[[:space:]]+[RD]'"
@@ -561,7 +562,6 @@ class MaintenanceAgent:
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
-        logger.info(f"MaintenanceAgent executing tool: {tool_name} with args: {args}")
         return self.registry.execute(tool_name, args)
 
     # ---------------------------------------------------------
@@ -591,6 +591,7 @@ class MaintenanceAgent:
                                 os.remove(os.path.join(root, fname))
                                 logger.info(f"Removed Pi agent session file: {fname}")
                             except Exception:
+                                # Ignore individual session file removal errors
                                 pass
         except Exception as e:
             logger.warning(f"Failed to clean Pi agent session files for {session_id}: {e}")
@@ -682,6 +683,7 @@ class MaintenanceAgent:
             if isinstance(parsed, dict) and "action" in parsed:
                 return self._normalize_action_dict(parsed)
         except Exception:
+            # Fall through to fenced or substring JSON extraction
             pass
 
         # 2. Extract outer markdown code fence (```json ... ``` or ``` ... ```) if wrapped
@@ -693,6 +695,7 @@ class MaintenanceAgent:
                 if isinstance(parsed, dict) and "action" in parsed:
                     return self._normalize_action_dict(parsed)
             except Exception:
+                # Fall through to outermost brace extraction
                 pass
 
         # 3. Search outermost matching { ... } containing "action"
@@ -706,6 +709,7 @@ class MaintenanceAgent:
                 if isinstance(parsed, dict) and "action" in parsed:
                     return self._normalize_action_dict(parsed)
             except Exception:
+                # Fall through to regex-based fallback extraction
                 pass
 
         # 4. Fallback regex specifically extracting final_answer or answer if JSON was malformed
