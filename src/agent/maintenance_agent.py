@@ -352,8 +352,45 @@ class MaintenanceAgent:
 
         return GitHubAuditor().run_full_audit()
 
+    def _get_pi_model_candidates(self) -> List[str]:
+        """Maps active provider chain into pi CLI model strings, guaranteeing local/active at the end."""
+        chain = self.ai_provider_store.get_chain()
+        mapped: List[str] = []
+        for entry in chain:
+            if "/" not in entry:
+                continue
+            prov, model = entry.split("/", 1)
+            clean_model = model.replace("models/", "").strip()
+            if prov in ("gemma", "google"):
+                mapped.append(f"google/{clean_model}")
+            elif prov == "openai":
+                mapped.append(f"openai/{clean_model}")
+            elif prov == "local":
+                mapped.append(f"local/{clean_model}")
+
+        # Ensure default cloud models are present if chain is empty or missing them
+        for default_cand in ["google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "openai/gpt-4o-mini"]:
+            if default_cand not in mapped:
+                mapped.insert(len(mapped) - 1 if "local/active" in mapped else len(mapped), default_cand)
+
+        # De-duplicate while preserving strength order
+        deduped: List[str] = []
+        for m in mapped:
+            if m not in deduped:
+                deduped.append(m)
+
+        # Guarantee local/active is strictly at the tail end
+        if "local/active" in deduped:
+            deduped.remove("local/active")
+        deduped.append("local/active")
+
+        return deduped
+
     def tool_pi_agent(self, prompt: str, timeout: int = 120) -> Dict[str, Any]:
-        """Invokes the Pi Coding Agent CLI on the host to perform deep exploration or task execution."""
+        """
+        Invokes Pi Coding Agent CLI on host with automated strength-ranked fallback.
+        Tries cloud models first by capability, cascading to local/active as the ultimate safety net.
+        """
         pi_bin = shutil.which("pi") or "/usr/bin/pi"
         if not (pi_bin and os.path.exists(pi_bin)):
             return {
@@ -362,30 +399,52 @@ class MaintenanceAgent:
             }
 
         safe_timeout = min(max(int(timeout), 10), 180)
-        try:
-            res = subprocess.run(
-                [pi_bin, "-p", str(prompt)],
-                cwd=PROJECT_ROOT,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=safe_timeout,
-            )
-            out = res.stdout.strip()
-            err = res.stderr.strip()
-            from src.agent.shell_tools import redact_secrets, _truncate
+        candidates = self._get_pi_model_candidates()
+        from src.agent.shell_tools import redact_secrets, _truncate
 
-            return {
-                "success": res.returncode == 0,
-                "exit_code": res.returncode,
-                "output": _truncate(redact_secrets(out or err)),
-                "raw_output": _truncate(redact_secrets(out)),
-                "stderr": _truncate(redact_secrets(err)) if err else "",
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Pi Agent 執行超過 {safe_timeout} 秒逾時。"}
-        except Exception as e:
-            return {"success": False, "error": f"調用 Pi Agent 失敗：{e}"}
+        last_error = ""
+        attempted_models: List[str] = []
+
+        for model_id in candidates:
+            attempted_models.append(model_id)
+            logger.info(f"Attempting Pi Agent execution with model: {model_id}...")
+            try:
+                res = subprocess.run(
+                    [pi_bin, "-p", "--model", model_id, str(prompt)],
+                    cwd=PROJECT_ROOT,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=safe_timeout,
+                )
+                out = res.stdout.strip()
+                err = res.stderr.strip()
+
+                if res.returncode == 0 and out:
+                    return {
+                        "success": True,
+                        "model_used": model_id,
+                        "exit_code": 0,
+                        "output": _truncate(redact_secrets(out)),
+                        "attempted_models": attempted_models,
+                    }
+
+                error_detail = err or out
+                last_error = f"Model {model_id} failed (code {res.returncode}): {error_detail[:200]}"
+                logger.warning(f"Pi Agent model {model_id} failed: {error_detail[:150]}, falling back to next candidate...")
+
+            except subprocess.TimeoutExpired:
+                last_error = f"Model {model_id} timed out after {safe_timeout}s"
+                logger.warning(last_error)
+            except Exception as e:
+                last_error = f"Model {model_id} unexpected exception: {e}"
+                logger.warning(last_error)
+
+        return {
+            "success": False,
+            "error": f"所有候選模型均調用失敗：{last_error}",
+            "attempted_models": attempted_models,
+        }
 
     def tool_inspect_system_load(self) -> Dict[str, Any]:
         """Inspects host CPU load average and processes in R (running) or D (disk I/O wait) state."""

@@ -244,6 +244,20 @@ class TestMaintenanceAgent(unittest.TestCase):
             self.assertTrue(res["success"])
             self.assertIn("Pi agent analysis complete", res["output"])
 
+    def test_tool_pi_agent_fallback_to_local_active(self):
+        with patch("shutil.which", return_value="/usr/bin/pi"), \
+             patch("os.path.exists", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            # First cloud candidate fails, second succeeds
+            mock_run.side_effect = [
+                MagicMock(returncode=1, stdout="", stderr="429 Rate limit"),
+                MagicMock(returncode=0, stdout="Fallback response from second candidate", stderr=""),
+            ]
+            res = self.agent.tool_pi_agent("help me analyze")
+            self.assertTrue(res["success"])
+            self.assertEqual(len(res["attempted_models"]), 2)
+            self.assertIn("Fallback response", res["output"])
+
     def test_tool_registry_registration_and_execution(self):
         registry = ToolRegistry()
 

@@ -99,36 +99,33 @@ def build_strength_fallback_chain(policy: str = "auto") -> List[str]:
 
     if p in ("gemini", "gemini_first"):
         chain.extend([
+            "gemma/gemini-3.5-flash",
             "gemma/gemini-3.5-flash-lite",
             "gemma/gemini-3.1-flash-lite",
-            "gemma/gemini-2.5-flash-lite",
-            "gemma/gemini-3.5-flash",
-            "gemma/gemini-2.5-flash",
             "openai/gpt-4o-mini",
             "local/active",
         ])
     elif p in ("openai", "openai_first"):
         chain.extend([
-            "openai/gpt-4o-mini",
             "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "gemma/gemini-3.5-flash",
             "gemma/gemini-3.5-flash-lite",
-            "gemma/gemini-2.5-flash-lite",
             "local/active",
         ])
     elif p in ("local", "local_first"):
         chain.extend([
             "local/active",
-            "gemma/gemini-3.5-flash-lite",
+            "gemma/gemini-3.5-flash",
             "openai/gpt-4o-mini",
             "local/active",
         ])
     else:
-        # Default "auto": Gemini Lite speed ladder -> Flash accuracy -> OpenAI cross-cloud -> Local
+        # Default "auto": Gemini 3.5 Flash (strong) -> 3.5 Flash Lite -> 3.1 Flash Lite -> OpenAI -> Local
         chain.extend([
+            "gemma/gemini-3.5-flash",
             "gemma/gemini-3.5-flash-lite",
             "gemma/gemini-3.1-flash-lite",
-            "gemma/gemini-2.5-flash-lite",
-            "gemma/gemini-3.5-flash",
             "openai/gpt-4o-mini",
             "local/active",
         ])
