@@ -556,7 +556,7 @@ def _request_completion(
 ) -> str:
     endpoint = url or _PROVIDERS[name].get("url") or get_endpoint_url(name)
     label = _PROVIDERS[name]["label"]
-    timeout = 60 if name == "local" else 45
+    timeout = 60 if name == "local" else 20
     response = requests.post(
         endpoint,
         headers={"Authorization": f"Bearer {key}"},
