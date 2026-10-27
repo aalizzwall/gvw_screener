@@ -317,12 +317,12 @@ class GVWDoctor:
     # ---------------------------------------------------------
     # 6. Safe Routine Remediation (Self-Healing)
     # ---------------------------------------------------------
-    def run_remediation(self) -> List[str]:
+    def run_remediation(self, light: bool = False) -> List[str]:
         """
         Executes safe self-healing actions:
         - Rotates oversized logs
         - Clears stale temporary / lock files
-        - VACUUM compresses SQLite databases
+        - VACUUM compresses SQLite databases (skipped when light=True, e.g. during market hours)
         - Automatically fails over AI provider if primary is down
         """
         actions = []
@@ -354,9 +354,9 @@ class GVWDoctor:
         except Exception as e:
             logger.warning(f"Remediation lock cleanup failed: {e}")
 
-        # 3. VACUUM SQLite databases
+        # 3. VACUUM SQLite databases (heavy; skipped in light mode to protect market-hours service)
         try:
-            db_files = glob.glob(os.path.join(self.data_dir, "*.db"))
+            db_files = [] if light else glob.glob(os.path.join(self.data_dir, "*.db"))
             vacuumed = 0
             for db in db_files:
                 conn = sqlite3.connect(db, timeout=10)

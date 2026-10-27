@@ -1,13 +1,34 @@
+import json
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from src.config import DATA_DIR
 from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCORE_WEIGHTS: Dict[str, float] = {"momentum": 0.4, "trend": 0.3, "quality": 0.3}
+
+
+def load_score_weights(path: Optional[str] = None) -> Dict[str, float]:
+    """Loads owner-approved score weights (data/tuning_weights.json), falling back to defaults."""
+    target = path or os.path.join(DATA_DIR, "tuning_weights.json")
+    try:
+        if os.path.exists(target):
+            with open(target, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            weights = {k: float(raw[k]) for k in DEFAULT_SCORE_WEIGHTS}
+            total = sum(weights.values())
+            if total > 0 and all(v >= 0 for v in weights.values()):
+                return {k: v / total for k, v in weights.items()}
+    except Exception as e:
+        logger.warning(f"Invalid tuning weights file, using defaults: {e}")
+    return dict(DEFAULT_SCORE_WEIGHTS)
 
 def calculate_momentum_score(current_price: float, prices_close: np.ndarray, market_close: Optional[np.ndarray] = None) -> float:
     """
@@ -255,11 +276,12 @@ def run_ranking(state_manager: Optional[IStateRepository] = None) -> Dict[str, A
     df_results['q_rank'] = df_results['q_val'].rank(pct=True)
     df_results['t_score'] = df_results['t_val']
 
-    # GVW Final Score: Momentum (40%) + Trend (30%) + Quality (30%)
+    # GVW Final Score: Momentum / Trend / Quality (default 40/30/30, tunable via approved proposal)
+    weights = load_score_weights()
     df_results['final_score'] = (
-        (df_results['m_rank'] * 0.4) +
-        (df_results['t_score'] * 0.3) +
-        (df_results['q_rank'] * 0.3)
+        (df_results['m_rank'] * weights["momentum"]) +
+        (df_results['t_score'] * weights["trend"]) +
+        (df_results['q_rank'] * weights["quality"])
     )
 
     valid_dates = df_results['sync_date'].dropna()
