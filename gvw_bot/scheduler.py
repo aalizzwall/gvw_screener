@@ -19,6 +19,9 @@ from src.reporting.report_engine import generate_daily_report
 from src.reporting.telegram_notifier import send_telegram_message
 from src.state.alert_subscribers import AlertSubscriptionStore
 from src.config import TELEGRAM_HOME_CHANNEL
+from src.autopilot.pilot import AutoPilot
+from src.diagnostics.doctor import GVWDoctor
+from src.state.state_manager import StateManager
 from gvw_bot.heartbeat import HeartbeatManager
 
 logger = logging.getLogger("gvw.scheduler")
@@ -94,6 +97,12 @@ class GVWScheduler:
         self.hb = heartbeat_mgr or HeartbeatManager()
         self.orchestrator = Orchestrator()
         self.alert_store = alert_store or AlertSubscriptionStore()
+        self.autopilot = AutoPilot(
+            state=StateManager(),
+            doctor=GVWDoctor(),
+            orchestrator=self.orchestrator,
+            ranking_fn=run_ranking,
+        )
         self.running = False
         self._thread: Optional[threading.Thread] = None
         self.jobs: List[ScheduledJob] = []
@@ -166,7 +175,69 @@ class GVWScheduler:
             grace_minutes=60,
         ))
 
+        # 8. Autopilot: pre-market data freshening (before 08:30 briefing)
+        self.jobs.append(ScheduledJob(
+            name="premarket_data_check",
+            func=self.job_premarket_data_check,
+            daily_time="07:30",
+            weekdays_only=True,
+            grace_minutes=50,
+        ))
+
+        # 9. Autopilot: lightweight guard, pre-open through close (no VACUUM during market)
+        self.jobs.append(ScheduledJob(
+            name="autopilot_guard",
+            func=self.job_autopilot_guard,
+            interval_minutes=15,
+            weekdays_only=True,
+            active_hours=(7.0, 13.6),
+        ))
+
+        # 10. Autopilot: post-market backtest review + daily digest (after report at 15:30)
+        self.jobs.append(ScheduledJob(
+            name="postmarket_review",
+            func=self.job_postmarket_review,
+            daily_time="16:00",
+            weekdays_only=True,
+            grace_minutes=120,
+        ))
+
+        # 11. Autopilot: nightly heavy maintenance (log rotation, VACUUM), every day
+        self.jobs.append(ScheduledJob(
+            name="nightly_maintenance",
+            func=self.job_nightly_maintenance,
+            daily_time="23:30",
+            weekdays_only=False,
+            grace_minutes=60,
+        ))
+
     # --- Job Implementations ---
+
+    def job_premarket_data_check(self) -> None:
+        result = self.autopilot.premarket_check()
+        after = result["after"]
+        self.hb.update_job_status(
+            "premarket_data_check", "ok",
+            message=f"stale {after['stale']}/{after['total']} refreshed={result['refreshed']}",
+        )
+
+    def job_autopilot_guard(self) -> None:
+        result = self.autopilot.intraday_guard(light=True)
+        self.hb.update_job_status(
+            "autopilot_guard", "warning" if result["issues"] else "ok",
+            message="; ".join(result["issues"]) or "healthy",
+        )
+
+    def job_postmarket_review(self) -> None:
+        result = self.autopilot.postmarket_review()
+        self.hb.update_job_status(
+            "postmarket_review", "ok",
+            message=f"recorded={result['recorded']} outcomes+={result['filled']}",
+        )
+
+    def job_nightly_maintenance(self) -> None:
+        actions = self.autopilot.nightly_maintenance()
+        self.hb.update_job_status("nightly_maintenance", "ok", message="; ".join(actions)[:200])
 
     def job_intraday_monitor(self) -> None:
         logger.info("[JOB] Running Intraday Monitor...")

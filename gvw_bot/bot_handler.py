@@ -1186,6 +1186,28 @@ class TelegramBotHandler:
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
             return
 
+        if data in ("tune:apply", "tune:ignore"):
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            pilot = getattr(self.scheduler, "autopilot", None)
+            if pilot is None:
+                self._answer_callback_query(callback_id, "自主管理模組未載入。")
+                return
+            if data == "tune:apply":
+                weights = pilot.apply_proposal()
+                if weights:
+                    self._answer_callback_query(callback_id, "已套用新權重")
+                    self.send_message(
+                        chat_id,
+                        "✅ <b>已套用新選股權重</b>（下次排名生效）\n"
+                        + "\n".join(f"• {k}：{v:.0%}" for k, v in weights.items()),
+                    )
+                else:
+                    self._answer_callback_query(callback_id, "建議已失效或不存在。")
+            else:
+                pilot.dismiss_proposal()
+                self._answer_callback_query(callback_id, "已忽略本週建議")
+            return
+
         if data == "status_jobs":
             chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
             self._answer_callback_query(callback_id, "正在載入排程清單...")

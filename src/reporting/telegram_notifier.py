@@ -8,7 +8,8 @@ logger = logging.getLogger(__name__)
 def send_telegram_message(
     text: str,
     bot_token: Optional[str] = None,
-    chat_id: Optional[str] = None
+    chat_id: Optional[str] = None,
+    reply_markup: Optional[dict] = None,
 ) -> bool:
     """
     Sends message to Telegram channel/chat.
@@ -26,6 +27,8 @@ def send_telegram_message(
         "text": text,
         "parse_mode": "HTML"
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     try:
         response = requests.post(url, json=payload, timeout=30)
