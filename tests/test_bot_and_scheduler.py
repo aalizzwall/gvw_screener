@@ -539,7 +539,7 @@ class TestBotAndScheduler(unittest.TestCase):
         with patch("gvw_bot.bot_handler.subprocess.run") as mock_run, \
              patch("gvw_bot.bot_handler.subprocess.check_output") as mock_check_output, \
              patch("gvw_bot.bot_handler.subprocess.Popen") as mock_popen, \
-             patch("gvw_bot.bot_handler.time.sleep") as mock_sleep, \
+             patch("gvw_bot.bot_handler.time.sleep"), \
              patch("gvw_bot.bot_handler.os.path.exists", return_value=False):
             mock_run.return_value = Mock(returncode=0, stderr="")
             mock_check_output.side_effect = [
@@ -554,6 +554,35 @@ class TestBotAndScheduler(unittest.TestCase):
         calls = [c.args[1] for c in bot.send_message.call_args_list]
         self.assertTrue(any("系統代碼更新成功" in c for c in calls))
         self.assertTrue(any("正在重啟" in c for c in calls))
+        mock_popen.assert_called_once_with(["systemctl", "--user", "restart", "gvw_bot"])
+        self.assertFalse(bot._updating)
+
+    def test_owner_update_handles_missing_pip_gracefully_and_still_restarts(self):
+        bot = TelegramBotHandler(token="test-token", owner_user_id="10")
+        bot.send_message = Mock()
+
+        def run_side_effect(cmd, **kwargs):
+            if "-m" in cmd and "pip" in cmd:
+                raise FileNotFoundError(2, "No such file or directory")
+            return Mock(returncode=0, stderr="")
+
+        with patch("gvw_bot.bot_handler.subprocess.run", side_effect=run_side_effect), \
+             patch("gvw_bot.bot_handler.subprocess.check_output") as mock_check_output, \
+             patch("gvw_bot.bot_handler.subprocess.Popen") as mock_popen, \
+             patch("gvw_bot.bot_handler.time.sleep"), \
+             patch("gvw_bot.bot_handler.os.path.exists", return_value=True):
+            mock_check_output.side_effect = [
+                "1111111oldrev",
+                "2222222newrev",
+                "2222222 feat: new update",
+                "2222222newrev",
+            ]
+
+            bot._execute_system_update(10)
+
+        calls = [c.args[1] for c in bot.send_message.call_args_list]
+        self.assertTrue(any("系統代碼更新成功" in c for c in calls))
+        self.assertFalse(any("更新程序異常" in c for c in calls))
         mock_popen.assert_called_once_with(["systemctl", "--user", "restart", "gvw_bot"])
         self.assertFalse(bot._updating)
 

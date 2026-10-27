@@ -215,6 +215,7 @@ class AIProviderPreferenceStore:
                     if data.get("chain"):
                         return "custom"
         except (FileNotFoundError, ValueError):
+            # Fall back to default policy if preferences file does not exist or is invalid
             pass
         return "auto"
 
