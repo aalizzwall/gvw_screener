@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 from src.config import DATA_DIR, LOGS_DIR
 from src.state.interfaces import IStateRepository
@@ -27,7 +27,7 @@ from src.analysis.ai_analyst import (
 logger = logging.getLogger("gvw.agent.maintenance")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MAX_TURNS = 12
+MAX_TURNS = 5
 
 
 class MaintenanceAgent:
@@ -525,7 +525,7 @@ class MaintenanceAgent:
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
-        logger.info("MaintenanceAgent executing tool")
+        logger.info(f"MaintenanceAgent executing tool: {tool_name} with args: {args}")
         return self.registry.execute(tool_name, args)
 
     # ---------------------------------------------------------
@@ -546,10 +546,15 @@ class MaintenanceAgent:
     # ---------------------------------------------------------
     # ReAct / Tool-Calling Reasoning Loop
     # ---------------------------------------------------------
-    def _call_llm(self, messages: List[Dict[str, str]]) -> str:
+    def _call_llm(
+        self,
+        messages: List[Dict[str, str]],
+        failed_models: Optional[Set[str]] = None,
+    ) -> str:
         """Invokes active LLM provider chain with Two-Tier model and provider fallback."""
         chain = self.ai_provider_store.get_chain()
         local_url = self.ai_provider_store.get_local_base_url()
+        skip_set = failed_models if failed_models is not None else set()
 
         for entry in chain:
             name, model = entry.split("/", 1) if "/" in entry else (entry, "")
@@ -562,6 +567,10 @@ class MaintenanceAgent:
             # Tier 1: Intra-provider model pool fallback
             pool = get_intra_provider_pool(name, key, local_base_url=local_url, preferred_model=model)
             for cand_model in pool:
+                model_key = f"{name}/{cand_model}"
+                if model_key in skip_set:
+                    continue
+
                 try:
                     actual_model = _resolve_model(name, cand_model, local_base_url=local_url)
                     return _request_completion(name, key, actual_model, messages, max_tokens=2500)
@@ -569,11 +578,22 @@ class MaintenanceAgent:
                     logger.warning(
                         f"MaintenanceAgent LLM call failed with {name}/{cand_model}: {e}"
                     )
+                    skip_set.add(model_key)
                     status = getattr(getattr(e, "response", None), "status_code", None)
-                    if status == 401:
-                        # Auth failure affects whole provider; cascade to next provider (Tier 2)
+                    err_msg = str(e).lower()
+                    if (
+                        status == 401
+                        or "credit_balance_exhausted" in err_msg
+                        or "insufficient_quota" in err_msg
+                    ):
+                        # Auth failure or zero credits affects whole provider; cascade to next provider (Tier 2)
+                        for m in pool:
+                            skip_set.add(f"{name}/{m}")
                         break
                     continue
+
+        if skip_set and failed_models is not None:
+            failed_models.clear()
 
         raise RuntimeError("所有 AI Provider 與備援模型均無法調用，無法進行維護模式診斷。")
 
@@ -688,12 +708,12 @@ class MaintenanceAgent:
             "你是 GVW 智能選股系統所在這台主機 (Raspberry Pi) 的系統管理員 (Maintenance Copilot)。\n"
             f"專案目錄：{PROJECT_ROOT}；服務為 systemd user service `gvw_bot`。\n"
             "你的任務是自主找出並解決資料缺失、排程異常、服務故障、網路或環境問題。\n"
-            "你擁有 bash / read_file / write_file / edit_file，可自由探索整台主機。\n"
-            "原則：\n"
-            "1. 先用唯讀指令查證 (journalctl、systemctl status、df、free、ps、curl、sqlite3、git log)，不可憑空猜測。\n"
-            "2. 修改檔案或重啟服務前，先說明原因；修改前必須 read_file 確認原文。\n"
-            "3. 不做破壞性操作 (刪除資料、格式化、關機)，不讀取或洩漏金鑰；修改程式碼請盡量小幅並說明如何還原。\n"
-            "4. 最終回報須包含：根因、你做了什麼、目前狀態、建議後續。\n\n"
+            "你擁有 bash / read_file / write_file / edit_file，可探索排查主機。\n"
+            "【關鍵原則】：\n"
+            "1. 請保持精簡高效！通常在調用 1~2 次工具（例如檢查 uptime、ps、free、df、systemctl status）取得核心資訊後，即應回傳 final_answer，嚴禁無意義的連續多輪深度探索。\n"
+            "2. 先用唯讀指令查證，不可憑空猜測；若只是架構或狀態查詢，直接統整後回傳結論。\n"
+            "3. 不做破壞性操作 (刪除資料、格式化、關機)，不讀取或洩漏金鑰。\n"
+            "4. 最終回報須包含繁體中文：根因/結論、執行操作、目前狀態、建議後續。\n\n"
             + tools_doc
             + "\n\n"
             "【Action 協議規範】\n"
@@ -706,7 +726,7 @@ class MaintenanceAgent:
             '{"action": "bash", "args": {"command": "uptime"}}\n'
             '{"action": "inspect_system_load", "args": {}}\n'
             '{"action": "inspect_stock", "args": {"ticker": "2330"}}\n\n'
-            "當你調用工具並獲得足夠的數據依據後，請回傳最終診斷結論，格式為：\n"
+            "當你調用工具並獲得足夠的數據依據後，請立即回傳最終診斷結論，格式為：\n"
             "{\n"
             '  "action": "final_answer",\n'
             '  "answer": "<你的繁體中文診斷分析與具體修復建議>"\n'
@@ -714,10 +734,11 @@ class MaintenanceAgent:
         )
 
         max_turns = MAX_TURNS
+        failed_models_in_session: Set[str] = set()
         for turn in range(max_turns):
             logger.info(f"MaintenanceAgent turn {turn + 1}/{max_turns}...")
             messages = session.get_messages(system_prompt)
-            raw_response = self._call_llm(messages)
+            raw_response = self._call_llm(messages, failed_models=failed_models_in_session)
 
             action_dict = self._parse_json_response(raw_response)
 
