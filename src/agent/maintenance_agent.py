@@ -577,10 +577,30 @@ class MaintenanceAgent:
 
         raise RuntimeError("所有 AI Provider 與備援模型均無法調用，無法進行維護模式診斷。")
 
+    def _normalize_action_dict(self, action_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Auto-repairs common minor LLM argument discrepancies (e.g. bash args)."""
+        action = str(action_dict.get("action", "")).strip()
+        args = action_dict.get("args")
+
+        if not isinstance(args, dict):
+            if action == "bash" and isinstance(args, str):
+                args = {"command": args.strip()}
+            elif action == "inspect_stock" and isinstance(args, (str, int)):
+                args = {"ticker": str(args).strip()}
+            else:
+                args = {}
+
+        if action == "bash" and "command" not in args and args:
+            first_k = next(iter(args.keys()))
+            args["command"] = first_k if not args[first_k] else str(args[first_k])
+
+        action_dict["args"] = args
+        return action_dict
+
     def _parse_json_response(self, raw_text: str) -> Optional[Dict[str, Any]]:
         """
         Robust JSON extractor for LLM outputs.
-        Handles markdown code fences, trailing commas, inner code blocks, and text wrappers.
+        Handles markdown code fences, trailing commas, inner code blocks, malformed args sets, and text wrappers.
         """
         cleaned = raw_text.strip()
 
@@ -588,7 +608,7 @@ class MaintenanceAgent:
         try:
             parsed = json.loads(cleaned)
             if isinstance(parsed, dict) and "action" in parsed:
-                return parsed
+                return self._normalize_action_dict(parsed)
         except Exception:
             pass
 
@@ -599,7 +619,7 @@ class MaintenanceAgent:
             try:
                 parsed = json.loads(candidate)
                 if isinstance(parsed, dict) and "action" in parsed:
-                    return parsed
+                    return self._normalize_action_dict(parsed)
             except Exception:
                 pass
 
@@ -612,7 +632,7 @@ class MaintenanceAgent:
             try:
                 parsed = json.loads(candidate_clean)
                 if isinstance(parsed, dict) and "action" in parsed:
-                    return parsed
+                    return self._normalize_action_dict(parsed)
             except Exception:
                 pass
 
@@ -628,6 +648,25 @@ class MaintenanceAgent:
             except Exception:
                 ans_clean = ans_raw.replace('\\n', '\n').replace('\\"', '"')
             return {"action": "final_answer", "answer": ans_clean}
+
+        # 5. Regex extraction for malformed actions like {"action": "bash", "args": {"uptime"}}
+        action_match = re.search(r'"action"\s*:\s*"([a-zA-Z0-9_-]+)"', cleaned)
+        if action_match:
+            action_name = action_match.group(1).strip()
+            if action_name == "final_answer":
+                return {"action": "final_answer", "answer": cleaned}
+
+            args_dict: Dict[str, Any] = {}
+            if action_name == "bash":
+                cmd_match = re.search(r'"(?:command|args)"\s*:\s*(?:\{\s*)?"([^"]+)"', cleaned)
+                if cmd_match:
+                    args_dict = {"command": cmd_match.group(1).strip()}
+            elif action_name == "inspect_stock":
+                ticker_match = re.search(r'"(?:ticker|args)"\s*:\s*(?:\{\s*)?"?(\d{4,6})"?', cleaned)
+                if ticker_match:
+                    args_dict = {"ticker": ticker_match.group(1).strip()}
+
+            return {"action": action_name, "args": args_dict}
 
         return None
 
@@ -658,11 +697,15 @@ class MaintenanceAgent:
             + tools_doc
             + "\n\n"
             "【Action 協議規範】\n"
-            "當你需要調用工具查詢時，請只回傳以下 JSON 格式 (不要有其他多餘文字)：\n"
+            "當你需要調用工具查詢時，請只回傳以下 JSON 格式 (不要有其他多餘文字，注意 args 必須是字典鍵值對)：\n"
             "{\n"
             '  "action": "<tool_name>",\n'
             '  "args": {"<arg_name>": "<arg_value>"}\n'
-            "}\n\n"
+            "}\n"
+            "呼叫工具範例：\n"
+            '{"action": "bash", "args": {"command": "uptime"}}\n'
+            '{"action": "inspect_system_load", "args": {}}\n'
+            '{"action": "inspect_stock", "args": {"ticker": "2330"}}\n\n'
             "當你調用工具並獲得足夠的數據依據後，請回傳最終診斷結論，格式為：\n"
             "{\n"
             '  "action": "final_answer",\n'
@@ -679,18 +722,21 @@ class MaintenanceAgent:
             action_dict = self._parse_json_response(raw_response)
 
             if not action_dict:
-                # Model directly returned plain text, or leaked a JSON answer wrapper
-                match_fallback = re.search(r'"(?:answer|final_answer)"\s*:\s*"([\s\S]*?)"\s*\}', raw_response)
-                if match_fallback:
-                    ans_raw = match_fallback.group(1)
-                    try:
-                        answer = json.loads(f'"{ans_raw}"').strip()
-                    except Exception:
-                        answer = ans_raw.replace('\\n', '\n').replace('\\"', '"').strip()
-                else:
-                    answer = raw_response.strip()
-                session.add_assistant_message(answer)
-                return answer
+                # If model clearly attempted an action (mentions "action":), prevent protocol leak
+                if '"action"' in raw_response:
+                    logger.warning("Model emitted unparseable action JSON, requesting self-correction...")
+                    session.add_assistant_message(raw_response)
+                    session.add_observation(
+                        "system",
+                        "格式錯誤：請務必回傳標準 JSON 格式呼叫工具，例如：\n"
+                        '{"action": "bash", "args": {"command": "uptime"}}\n'
+                        '{"action": "final_answer", "answer": "<繁體中文分析結論>"}'
+                    )
+                    continue
+
+                # Model directly returned natural language plain text
+                session.add_assistant_message(raw_response.strip())
+                return raw_response.strip()
 
             action = action_dict.get("action")
             if action == "final_answer":

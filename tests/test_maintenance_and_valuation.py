@@ -145,6 +145,24 @@ class TestMaintenanceAgent(unittest.TestCase):
         self.assertEqual(parsed["action"], "final_answer")
         self.assertEqual(parsed["answer"], "系統健康狀態良好。")
 
+    def test_parse_json_response_auto_repairs_malformed_args(self):
+        malformed = '{\n  "action": "bash",\n  "args": {\n    "uptime"\n  }\n}'
+        parsed = self.agent._parse_json_response(malformed)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["action"], "bash")
+        self.assertEqual(parsed["args"].get("command"), "uptime")
+
+    def test_ask_handles_malformed_action_json_without_protocol_leak(self):
+        responses = [
+            '{\n  "action": "bash",\n  "args": {\n    "uptime"\n  }\n}',
+            '{\n  "action": "final_answer",\n  "answer": "系統運作正常，負載良好。"\n}',
+        ]
+        with patch.object(self.agent, "_call_llm", side_effect=responses), \
+             patch.object(self.agent, "_execute_tool", return_value={"output": "13:00 up 2 days, load average: 0.15"}):
+            ans = self.agent.ask("檢查目前架構")
+            self.assertNotIn('"action": "bash"', ans)
+            self.assertEqual(ans, "系統運作正常，負載良好。")
+
     def test_ask_unwraps_malformed_json_fallback(self):
         malformed = (
             '{"action": "final_answer", "answer": "請重啟服務：\\n```bash\\nsudo systemctl restart gvw_bot\\n```"}'

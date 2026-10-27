@@ -162,8 +162,8 @@ AI_CHAIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "title": "🧠 Gemini Standard 均衡鏈",
         "description": "高精度 Flash 主力 + Lite 備援 + 地端保底",
         "chain": [
-            "gemma/gemini-2.5-flash",
-            "gemma/gemini-2.5-flash-lite",
+            "gemma/gemini-3.8-flash",
+            "gemma/gemini-3.5-flash-lite",
             "local/active",
         ],
     },
@@ -172,7 +172,7 @@ AI_CHAIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "description": "本機 LM-Studio 優先 + 雲端 Flash 備援",
         "chain": [
             "local/active",
-            "gemma/gemini-2.5-flash-lite",
+            "gemma/gemini-3.5-flash-lite",
         ],
     },
 }
