@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 from src.config import DATA_DIR, LOGS_DIR
 from src.state.interfaces import IStateRepository
