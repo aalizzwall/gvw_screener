@@ -562,8 +562,6 @@ class MaintenanceAgent:
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
-        arg_keys = sorted(args.keys()) if isinstance(args, dict) else []
-        logger.info("MaintenanceAgent executing tool: %s (arg_keys=%s)", tool_name, arg_keys)
         return self.registry.execute(tool_name, args)
 
     # ---------------------------------------------------------
