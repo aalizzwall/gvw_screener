@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from src.analysis.ranker import DEFAULT_SCORE_WEIGHTS, load_score_weights
+from src.autopilot.benchmark import BenchmarkSeries
 from src.config import DATA_DIR
 
 logger = logging.getLogger("gvw.autopilot.ledger")
@@ -16,6 +17,20 @@ logger = logging.getLogger("gvw.autopilot.ledger")
 HORIZONS = (1, 5, 20)
 KEEP_DAYS = 120
 FACTOR_COLUMNS = {"momentum": "m_rank", "trend": "t_score", "quality": "q_rank"}
+
+
+def format_performance_section(summary: Dict[str, Any]) -> str:
+    """Telegram-HTML block of realized recommendation performance; '' when nothing is measured yet."""
+    measured = [(h, v) for h, v in summary.get("horizons", {}).items() if v["n"]]
+    if not measured:
+        return ""
+    lines = ["\n📈 <b>歷史推薦績效（Top 50 實測）</b>\n"]
+    for h, v in measured:
+        line = f"• T+{h}：勝率 {v['win_rate']:.0%}｜平均 {v['avg_return']:+.2%}"
+        if v.get("n_excess"):
+            line += f"｜相對大盤 {v['avg_excess']:+.2%}（贏大盤 {v['beat_rate']:.0%}）"
+        lines.append(line + f"｜n={v['n']}\n")
+    return "".join(lines)
 
 
 class RecommendationLedger:
@@ -84,14 +99,19 @@ class RecommendationLedger:
         return len(picks)
 
     # ---- evaluation ----
-    def evaluate(self) -> int:
-        """Fill in forward returns for horizons that have matured. Returns outcomes newly filled."""
+    def evaluate(self, benchmark: Optional[BenchmarkSeries] = None) -> int:
+        """Fill in forward returns (and excess vs TAIEX when available). Returns outcomes newly filled."""
         entries = self._load()
         cache: Dict[str, pd.DataFrame] = {}
         filled = 0
+        changed = False
         for entry in entries:
             for pick in entry.get("picks", []):
-                pending = [h for h in HORIZONS if str(h) not in pick["outcomes"]]
+                excess = pick.setdefault("excess", {})
+                pending = [
+                    h for h in HORIZONS
+                    if str(h) not in pick["outcomes"] or (benchmark and str(h) not in excess)
+                ]
                 if not pending:
                     continue
                 series = cache.setdefault(pick["ticker"], self._price_series(pick["ticker"]))
@@ -100,11 +120,19 @@ class RecommendationLedger:
                     continue
                 idx = idx_list[0]
                 for h in pending:
-                    if idx + h < len(series):
+                    if idx + h >= len(series):
+                        continue
+                    if str(h) not in pick["outcomes"]:
                         ret = float(series["close"].iloc[idx + h]) / pick["base_close"] - 1
                         pick["outcomes"][str(h)] = round(ret, 5)
                         filled += 1
-        if filled:
+                        changed = True
+                    if benchmark and str(h) not in excess:
+                        bench = benchmark.ret(pick["base_date"], series["date"].iloc[idx + h])
+                        if bench is not None:
+                            excess[str(h)] = round(pick["outcomes"][str(h)] - bench, 5)
+                            changed = True
+        if changed:
             self._save(entries)
         return filled
 
@@ -114,10 +142,14 @@ class RecommendationLedger:
         picks = [p for e in self._load() for p in e.get("picks", [])]
         for h in HORIZONS:
             rets = [p["outcomes"][str(h)] for p in picks if str(h) in p["outcomes"]]
+            exc = [p["excess"][str(h)] for p in picks if str(h) in p.get("excess", {})]
             out["horizons"][h] = {
                 "n": len(rets),
                 "win_rate": round(sum(r > 0 for r in rets) / len(rets), 4) if rets else None,
                 "avg_return": round(sum(rets) / len(rets), 5) if rets else None,
+                "n_excess": len(exc),
+                "avg_excess": round(sum(exc) / len(exc), 5) if exc else None,
+                "beat_rate": round(sum(x > 0 for x in exc) / len(exc), 4) if exc else None,
             }
         by_signal: Dict[str, List[float]] = {}
         for p in picks:
@@ -134,7 +166,8 @@ class RecommendationLedger:
     # ---- tuning proposal (never auto-applied) ----
     def propose_weights(self, min_samples: int = 150) -> Optional[Dict[str, Any]]:
         rows = [
-            {**{col: p[col] for col in FACTOR_COLUMNS.values()}, "ret": p["outcomes"]["5"]}
+            {**{col: p[col] for col in FACTOR_COLUMNS.values()},
+             "ret": p.get("excess", {}).get("5", p["outcomes"]["5"])}  # prefer market-neutral return
             for e in self._load() for p in e.get("picks", []) if "5" in p["outcomes"]
         ]
         if len(rows) < min_samples:
