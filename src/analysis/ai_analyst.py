@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -500,6 +501,15 @@ def _build_messages(name: str, user_content: str) -> List[Dict[str, str]]:
     return [{"role": "user", "content": f"{ANALYSIS_INSTRUCTIONS}\n\n資料快照 (JSON)：\n{user_content}"}]
 
 
+def _strip_thinking_blocks(text: str) -> str:
+    """Remove <think>...</think> or <thought>...</thought> reasoning blocks from model output."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<(?:think|thought)>[\s\S]*?</(?:think|thought)>", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<(?:think|thought)>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _request_gemini_native(
     key: str,
     model: str,
@@ -541,9 +551,25 @@ def _request_gemini_native(
     if not candidates:
         raise ValueError("Google Gemini Native API 未回傳任何 candidates")
     parts = candidates[0].get("content", {}).get("parts", [])
-    if not parts or "text" not in parts[0]:
+    if not parts:
         raise ValueError("Google Gemini Native API 回傳空白結果")
-    return parts[0]["text"].strip()
+
+    text_chunks = [
+        str(p.get("text", "")).strip()
+        for p in parts
+        if isinstance(p, dict) and not p.get("thought") and p.get("text")
+    ]
+    if not text_chunks:
+        text_chunks = [
+            str(p.get("text", "")).strip()
+            for p in parts
+            if isinstance(p, dict) and p.get("text")
+        ]
+
+    combined = _strip_thinking_blocks("\n".join(c for c in text_chunks if c))
+    if not combined:
+        raise ValueError("Google Gemini Native API 回傳空白結果")
+    return combined
 
 
 def _request_completion(
@@ -556,7 +582,7 @@ def _request_completion(
 ) -> str:
     endpoint = url or _PROVIDERS[name].get("url") or get_endpoint_url(name)
     label = _PROVIDERS[name]["label"]
-    timeout = 60 if name == "local" else 20
+    timeout = 90 if name == "local" else 35
     response = requests.post(
         endpoint,
         headers={"Authorization": f"Bearer {key}"},
@@ -581,11 +607,20 @@ def _request_completion(
 
     text = ""
     if isinstance(content, str) and content.strip():
-        text = content.strip()
-    elif isinstance(reasoning, str) and reasoning.strip():
-        text = reasoning.strip()
-    elif "text" in choices[0] and isinstance(choices[0]["text"], str) and choices[0]["text"].strip():
-        text = choices[0]["text"].strip()
+        text = _strip_thinking_blocks(content)
+
+    if not text and isinstance(reasoning, str) and reasoning.strip():
+        # If reasoning contains an explicit closing </think> tag followed by answer text, extract the answer
+        if "</think>" in reasoning.lower() or "</thought>" in reasoning.lower():
+            text = _strip_thinking_blocks(reasoning)
+        elif max_tokens <= 64:
+            # Allow health-check ping on reasoning models where 32 tokens only fits reasoning
+            text = _strip_thinking_blocks(reasoning)
+        else:
+            raise ValueError(f"{label} 思考過程耗盡 Token，未產出正式分析結論")
+
+    if not text and "text" in choices[0] and isinstance(choices[0]["text"], str) and choices[0]["text"].strip():
+        text = _strip_thinking_blocks(choices[0]["text"])
 
     if not text:
         raise ValueError(f"{label} 回傳空白分析結果")
@@ -673,7 +708,7 @@ def analyze_stock(
             actual_model = _resolve_model(name, candidate_model, local_base_url)
             try:
                 return _request_completion(
-                    name, key, actual_model, _build_messages(name, user_content), 900, url=endpoint
+                    name, key, actual_model, _build_messages(name, user_content), 4096, url=endpoint
                 )
             except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
                 _log_failure(f"{label}({actual_model})", ticker, key, exc)

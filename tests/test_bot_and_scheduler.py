@@ -141,14 +141,14 @@ class TestBotAndScheduler(unittest.TestCase):
             },
         )
         with (
-            patch("gvw_bot.bot_handler.analyze_stock", return_value="多空分析") as analyze,
+            patch("gvw_bot.bot_handler.analyze_stock", return_value="1. **資料概要**：多空分析") as analyze,
             patch("gvw_bot.bot_handler.requests.get", return_value=response),
         ):
             bot.poll_once()
 
         analyze.assert_called_once_with("2330")
         self.assertNotIn(123, bot.pending_analysis_chats)
-        self.assertIn("多空分析", bot.send_message.call_args.args[1])
+        self.assertIn("1. <b>資料概要</b>：多空分析", bot.send_message.call_args.args[1])
         self.assertIn("非投資建議", bot.send_message.call_args.args[1])
 
     def test_ai_analysis_rejects_chat_not_in_allowlist(self):

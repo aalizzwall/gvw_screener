@@ -416,10 +416,47 @@ class TestAIAnalyst(unittest.TestCase):
             text = _request_completion(
                 "local", "", "deepseek-r1", [{"role": "user", "content": "ping"}], 32
             )
-        self.assertIn("分析：建議回調觀察", text)
+        self.assertEqual(text, "分析：建議回調觀察")
+
+    def test_request_completion_rejects_unterminated_reasoning_on_full_analysis(self):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "): Peer count 96. Industry Avg PE = 53.39",
+                    }
+                }
+            ]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=resp):
+            with self.assertRaisesRegex(ValueError, "思考過程耗盡 Token"):
+                _request_completion(
+                    "local", "", "qwen3-9b", [{"role": "user", "content": "analyze"}], 4096
+                )
+
+    def test_request_completion_strips_think_tags_from_content(self):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>\nPeer count 96. Industry Avg PE = 53.39\n</think>\n\n1. **資料概要與期別**：2026Q3 累計",
+                    }
+                }
+            ]
+        }
+        with patch("src.analysis.ai_analyst.requests.post", return_value=resp):
+            text = _request_completion(
+                "local", "", "qwen3-9b", [{"role": "user", "content": "analyze"}], 4096
+            )
+        self.assertEqual(text, "1. **資料概要與期別**：2026Q3 累計")
 
     @patch("src.analysis.ai_analyst.requests.post")
-    def test_request_completion_falls_back_to_gemini_native_when_openai_proxy_returns_404(
+    def test_request_completion_falls_back_to_gemini_native_and_filters_thought_parts(
         self, mock_post
     ):
         proxy_resp = Mock(status_code=404)
@@ -428,7 +465,10 @@ class TestAIAnalyst(unittest.TestCase):
             "candidates": [
                 {
                     "content": {
-                        "parts": [{"text": "Gemini 原生 API 分析完成"}]
+                        "parts": [
+                            {"thought": True, "text": "Internal English reasoning..."},
+                            {"text": "Gemini 原生 API 分析完成"},
+                        ]
                     }
                 }
             ]
@@ -436,7 +476,7 @@ class TestAIAnalyst(unittest.TestCase):
         mock_post.side_effect = [proxy_resp, native_resp]
 
         text = _request_completion(
-            "gemma", "gm-key", "gemini-2.5-flash", [{"role": "user", "content": "ping"}], 32
+            "gemma", "gm-key", "gemini-2.5-flash", [{"role": "user", "content": "ping"}], 4096
         )
         self.assertEqual(text, "Gemini 原生 API 分析完成")
         self.assertEqual(mock_post.call_count, 2)
