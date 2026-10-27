@@ -4,7 +4,7 @@ import time
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 from src.agent.maintenance_agent import MaintenanceAgent
 from src.agent.tool_registry import ToolRegistry
@@ -210,6 +210,39 @@ class TestMaintenanceAgent(unittest.TestCase):
         res = self.agent.tool_inspect_ai_config()
         self.assertIn("provider_chain", res)
         self.assertIn("primary_provider", res)
+
+    def test_tool_inspect_system_load(self):
+        res = self.agent.tool_inspect_system_load()
+        self.assertIn("load_average_1m_5m_15m", res)
+        self.assertIn("blocked_io_processes_count", res)
+        self.assertIn("cpu_active_processes_count", res)
+
+    def test_tool_inspect_log2ram_and_disk(self):
+        res = self.agent.tool_inspect_log2ram_and_disk()
+        self.assertIn("has_log2ram", res)
+        self.assertIn("log2ram_usage_pct", res)
+        self.assertIn("is_critical", res)
+
+    def test_tool_clean_system_logs(self):
+        with patch.object(self.agent.shell, "bash", return_value={"exit_code": 0, "stdout": "vacuumed"}):
+            res = self.agent.tool_clean_system_logs(max_size_mb=20)
+            self.assertTrue(res["success"])
+            self.assertEqual(res["output"], "vacuumed")
+
+    def test_tool_check_service_health(self):
+        with patch.object(self.agent.shell, "bash", return_value={"exit_code": 0, "stdout": "unit.service failed\n---\n"}):
+            res = self.agent.tool_check_service_health()
+            self.assertTrue(res["has_failed_units"])
+            self.assertIn("unit.service failed", res["system_failed_units"])
+
+    def test_tool_pi_agent_execution(self):
+        with patch("shutil.which", return_value="/usr/bin/pi"), \
+             patch("os.path.exists", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Pi agent analysis complete", stderr="")
+            res = self.agent.tool_pi_agent("help me analyze")
+            self.assertTrue(res["success"])
+            self.assertIn("Pi agent analysis complete", res["output"])
 
     def test_tool_registry_registration_and_execution(self):
         registry = ToolRegistry()

@@ -2,7 +2,9 @@ import os
 import glob
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -116,6 +118,41 @@ class MaintenanceAgent:
             name="inspect_github_health",
             description="執行 GitHub 倉庫健康巡檢，檢查 CodeQL 弱點掃描警報、CI/CD 失敗紀錄與待追蹤 Issues。",
             handler=self.tool_inspect_github_health,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="pi_agent",
+            description="呼叫主機上的 Pi Coding Agent (pi CLI) 執行高階專案程式碼審視、複雜問題排查或自主修復建議。",
+            handler=self.tool_pi_agent,
+            parameters={
+                "prompt": {"type": "string", "description": "要發送給 Pi Agent 的任務提示詞", "required": True},
+                "timeout": {"type": "integer", "description": "逾時秒數 (預設 120 秒)", "required": False, "default": 120},
+            },
+        )
+        self.registry.register_tool(
+            name="inspect_system_load",
+            description="檢查主機負載 (Load Average) 與是否有程序卡在磁碟 I/O (D 狀態) 或過度佔用 CPU (R 狀態)。",
+            handler=self.tool_inspect_system_load,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="inspect_log2ram_and_disk",
+            description="檢查主機磁碟空間與樹莓派 /var/log (log2ram 記憶體虛擬磁碟) 佔用率，提早防範磁碟滿載導致系統崩潰。",
+            handler=self.tool_inspect_log2ram_and_disk,
+            parameters={},
+        )
+        self.registry.register_tool(
+            name="clean_system_logs",
+            description="清理系統過期日誌並對 journal 進行真空壓縮 (journalctl vacuum)，釋放 /var/log 記憶體磁碟空間。",
+            handler=self.tool_clean_system_logs,
+            parameters={
+                "max_size_mb": {"type": "integer", "description": "保留的最大 journal 大小 (MB，預設 20)", "required": False, "default": 20},
+            },
+        )
+        self.registry.register_tool(
+            name="check_service_health",
+            description="檢查 systemd (系統層與使用者層) 是否有失敗 (failed) 或處於無窮自動重啟 (flapping) 的服務。",
+            handler=self.tool_check_service_health,
             parameters={},
         )
 
@@ -314,6 +351,118 @@ class MaintenanceAgent:
         from src.diagnostics.github_auditor import GitHubAuditor
 
         return GitHubAuditor().run_full_audit()
+
+    def tool_pi_agent(self, prompt: str, timeout: int = 120) -> Dict[str, Any]:
+        """Invokes the Pi Coding Agent CLI on the host to perform deep exploration or task execution."""
+        pi_bin = shutil.which("pi") or "/usr/bin/pi"
+        if not (pi_bin and os.path.exists(pi_bin)):
+            return {
+                "success": False,
+                "error": "主機上未安裝 pi CLI，請先確認已安裝 @earendil-works/pi-coding-agent。",
+            }
+
+        safe_timeout = min(max(int(timeout), 10), 180)
+        try:
+            res = subprocess.run(
+                [pi_bin, "-p", str(prompt)],
+                cwd=PROJECT_ROOT,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=safe_timeout,
+            )
+            out = res.stdout.strip()
+            err = res.stderr.strip()
+            from src.agent.shell_tools import redact_secrets, _truncate
+
+            return {
+                "success": res.returncode == 0,
+                "exit_code": res.returncode,
+                "output": _truncate(redact_secrets(out or err)),
+                "raw_output": _truncate(redact_secrets(out)),
+                "stderr": _truncate(redact_secrets(err)) if err else "",
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": f"Pi Agent 執行超過 {safe_timeout} 秒逾時。"}
+        except Exception as e:
+            return {"success": False, "error": f"調用 Pi Agent 失敗：{e}"}
+
+    def tool_inspect_system_load(self) -> Dict[str, Any]:
+        """Inspects host CPU load average and processes in R (running) or D (disk I/O wait) state."""
+        load_avg = [0.0, 0.0, 0.0]
+        if os.path.exists("/proc/loadavg"):
+            try:
+                with open("/proc/loadavg", "r") as f:
+                    parts = f.read().strip().split()
+                    load_avg = [float(parts[0]), float(parts[1]), float(parts[2])]
+            except Exception:
+                pass
+
+        cmd = "ps -eo pid,stat,%cpu,%mem,wchan:20,comm,args | grep -E '^[[:space:]]*[0-9]+[[:space:]]+[RD]'"
+        res = self.shell.bash(cmd, timeout=10)
+        lines = res.get("stdout", "").strip().splitlines() if res.get("stdout") else []
+
+        d_processes = [l for l in lines if re.search(r'\b[D][a-zA-Z]*\b', l)]
+        r_processes = [l for l in lines if re.search(r'\b[R][a-zA-Z]*\b', l)]
+
+        return {
+            "load_average_1m_5m_15m": load_avg,
+            "blocked_io_processes_count": len(d_processes),
+            "blocked_io_processes": d_processes[:10],
+            "cpu_active_processes_count": len(r_processes),
+            "cpu_active_processes": r_processes[:10],
+            "warning": "⚠️ 發現有程序卡在磁碟 I/O (D 狀態)，可能為隨身碟/磁碟掉盤或卡死！" if d_processes else "系統進程狀態正常，無磁碟 I/O 阻塞。",
+        }
+
+    def tool_inspect_log2ram_and_disk(self) -> Dict[str, Any]:
+        """Inspects /var/log and root partition disk space, warning if log2ram is full."""
+        df_res = self.shell.bash("df -h / /var/log 2>/dev/null", timeout=10)
+        df_out = df_res.get("stdout", "")
+
+        is_log2ram = "log2ram" in df_out
+        log2ram_full = False
+        log_usage_pct = 0
+
+        for line in df_out.splitlines():
+            if "/var/log" in line or "log2ram" in line:
+                m = re.search(r'(\d+)%', line)
+                if m:
+                    log_usage_pct = int(m.group(1))
+                    if log_usage_pct >= 80:
+                        log2ram_full = True
+
+        return {
+            "df_output": df_out,
+            "has_log2ram": is_log2ram,
+            "log2ram_usage_pct": log_usage_pct,
+            "is_critical": log2ram_full,
+            "warning": "🚨 /var/log 記憶體磁碟使用率超過 80%，可能即將引發 No space left on device 故障！建議呼叫 clean_system_logs 釋放。" if log2ram_full else "磁碟與日誌空間充足。",
+        }
+
+    def tool_clean_system_logs(self, max_size_mb: int = 20) -> Dict[str, Any]:
+        """Vacuums systemd journals and rotates logs to free up /var/log space."""
+        clean_cmd = f"sudo journalctl --vacuum-size={max_size_mb}M 2>&1; sudo rm -f /var/log/*.1 /var/log/*.old 2>/dev/null; sudo logrotate /etc/logrotate.conf 2>&1; df -h /var/log"
+        res = self.shell.bash(clean_cmd, timeout=30)
+        return {
+            "success": res.get("exit_code") == 0,
+            "output": res.get("stdout") or res.get("stderr"),
+        }
+
+    def tool_check_service_health(self) -> Dict[str, Any]:
+        """Checks for failed or flapping systemd units."""
+        cmd = "systemctl list-units --state=failed --no-legend 2>&1; echo '---'; systemctl --user list-units --state=failed --no-legend 2>&1"
+        res = self.shell.bash(cmd, timeout=10)
+        out = res.get("stdout", "")
+        parts = out.split("---")
+        sys_failed = [l.strip() for l in parts[0].splitlines() if l.strip()]
+        user_failed = [l.strip() for l in parts[1].splitlines() if l.strip()] if len(parts) > 1 else []
+
+        return {
+            "system_failed_units": sys_failed,
+            "user_failed_units": user_failed,
+            "has_failed_units": bool(sys_failed or user_failed),
+            "message": "系統與使用者服務皆運行正常。" if not (sys_failed or user_failed) else f"發現異常服務：{sys_failed + user_failed}",
+        }
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Executes a diagnostic tool via registry."""
