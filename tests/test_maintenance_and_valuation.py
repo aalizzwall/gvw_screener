@@ -276,6 +276,60 @@ class TestMaintenanceAgent(unittest.TestCase):
             self.assertEqual(len(res["attempted_models"]), 2)
             self.assertIn("Fallback response", res["output"])
 
+    def test_tool_pi_agent_with_session_and_prompt(self):
+        with patch("shutil.which", return_value="/usr/bin/pi"), \
+             patch("os.path.exists", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Pi session answer", stderr="")
+            res = self.agent.tool_pi_agent(
+                prompt="檢查狀態",
+                session_id="chat123",
+                append_system_prompt="System prompt text",
+            )
+            self.assertTrue(res["success"])
+            self.assertIn("Pi session answer", res["output"])
+            called_cmd = mock_run.call_args[0][0]
+            self.assertIn("--session-id", called_cmd)
+            self.assertIn("telegram-chat123", called_cmd)
+            self.assertIn("--append-system-prompt", called_cmd)
+            self.assertIn("System prompt text", called_cmd)
+
+    def test_clean_pi_output(self):
+        raw = "\x1b[32mWarning: No project session found with id 'xyz'\nwarning: another warning\n實際輸出結果\x1b[0m"
+        cleaned = self.agent._clean_pi_output(raw)
+        self.assertEqual(cleaned, "實際輸出結果")
+
+    def test_ask_delegates_to_pi_agent_when_available(self):
+        with patch("shutil.which", return_value="/usr/bin/pi"), \
+             patch("os.path.exists", return_value=True), \
+             patch.object(self.agent, "tool_pi_agent", return_value={"success": True, "output": "Pi Agent 診斷完成。"}) as mock_pi:
+            ans = self.agent.ask("檢查目前架構", session_id="chat-42")
+            self.assertEqual(ans, "Pi Agent 診斷完成。")
+            mock_pi.assert_called_once()
+            self.assertEqual(mock_pi.call_args[1]["session_id"], "chat-42")
+
+    def test_ask_falls_back_to_builtin_react_when_pi_fails(self):
+        with patch("shutil.which", return_value="/usr/bin/pi"), \
+             patch("os.path.exists", return_value=True), \
+             patch.object(self.agent, "tool_pi_agent", return_value={"success": False, "error": "timeout"}), \
+             patch.object(self.agent, "_call_llm", return_value='{"action": "final_answer", "answer": "ReAct 備援結論"}'):
+            ans = self.agent.ask("檢查目前架構")
+            self.assertEqual(ans, "ReAct 備援結論")
+
+    def test_clear_session_removes_pi_session_file(self):
+        pi_dir = os.path.join(self.temp_dir.name, "pi_agent")
+        pi_sessions_dir = os.path.join(pi_dir, "sessions", "project")
+        os.makedirs(pi_sessions_dir, exist_ok=True)
+        session_file = os.path.join(pi_sessions_dir, "2026-10-27_telegram-chat99.jsonl")
+        with open(session_file, "w") as f:
+            f.write("{}")
+
+        with patch.dict(os.environ, {"PI_CODING_AGENT_DIR": pi_dir}):
+            self.agent.get_or_create_session("chat99")
+            self.assertTrue(os.path.exists(session_file))
+            self.agent.clear_session("chat99")
+            self.assertFalse(os.path.exists(session_file))
+
     def test_tool_registry_registration_and_execution(self):
         registry = ToolRegistry()
 
@@ -531,6 +585,62 @@ class TestValuationServiceAndIntegration(unittest.TestCase):
         self.assertIn("股價淨值比", snap3["missing_data"])
         self.assertIn("本益比", snap3["missing_data"])
         self.assertIn("股利殖利率", snap3["missing_data"])
+
+
+class TestConfigPiBridge(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_load_pi_agent_config_reads_auth_and_models(self):
+        from src.config import load_pi_agent_config
+
+        auth_data = {
+            "google": {"type": "api_key", "key": "test-gemini-key-123"},
+            "openai": {"type": "api_key", "key": "test-openai-key-456"},
+        }
+        models_data = {
+            "providers": {
+                "local": {
+                    "baseUrl": "http://192.168.0.200:1234/v1",
+                    "apiKey": "lm-studio-test",
+                }
+            }
+        }
+        with open(os.path.join(self.temp_dir.name, "auth.json"), "w") as f:
+            json.dump(auth_data, f)
+        with open(os.path.join(self.temp_dir.name, "models.json"), "w") as f:
+            json.dump(models_data, f)
+
+        # Clear existing env vars
+        env_to_restore = {}
+        for k in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "LOCAL_AI_BASE_URL", "LOCAL_AI_API_KEY"]:
+            if k in os.environ:
+                env_to_restore[k] = os.environ.pop(k)
+
+        try:
+            load_pi_agent_config(pi_dir=self.temp_dir.name)
+            self.assertEqual(os.environ.get("GEMINI_API_KEY"), "test-gemini-key-123")
+            self.assertEqual(os.environ.get("OPENAI_API_KEY"), "test-openai-key-456")
+            self.assertEqual(os.environ.get("LOCAL_AI_BASE_URL"), "http://192.168.0.200:1234/v1")
+            self.assertEqual(os.environ.get("LOCAL_AI_API_KEY"), "lm-studio-test")
+        finally:
+            for k in ["GEMINI_API_KEY", "OPENAI_API_KEY", "LOCAL_AI_BASE_URL", "LOCAL_AI_API_KEY"]:
+                os.environ.pop(k, None)
+            os.environ.update(env_to_restore)
+
+    def test_load_pi_agent_config_preserves_explicit_env(self):
+        from src.config import load_pi_agent_config
+
+        auth_data = {"google": {"key": "auth-key"}}
+        with open(os.path.join(self.temp_dir.name, "auth.json"), "w") as f:
+            json.dump(auth_data, f)
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "explicit-env-key"}):
+            load_pi_agent_config(pi_dir=self.temp_dir.name)
+            self.assertEqual(os.environ.get("GEMINI_API_KEY"), "explicit-env-key")
 
 
 if __name__ == "__main__":
