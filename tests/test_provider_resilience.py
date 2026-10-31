@@ -531,6 +531,49 @@ class ProviderResilienceTests(unittest.TestCase):
             numbered_rows = re.findall(r"(?m)^\d+\. ", section)
             self.assertEqual(len(numbered_rows), 10)
 
+    def test_run_ranking_rows_carry_price_data_as_of(self):
+        from src.analysis.ranker import run_ranking
+
+        class FakeRankState(FakeState):
+            def list_stock_tickers(self):
+                return list(self.stock_data.keys())
+
+            def get_stock_data(self, ticker):
+                return dict(self.stock_data.get(ticker, {}))
+
+            def get_market_index(self):
+                return {}
+
+            def save_ranks(self, ranks):
+                self.ranks = dict(ranks)
+
+        prices = [{"date": f"2026-10-{day:02d}", "close": 100 + day} for day in range(1, 25)]
+        state = FakeRankState(stock_data={
+            "2330": {
+                "ticker": "2330",
+                "name": "台積電",
+                "prices": prices,
+                "updated_at": "2026-10-24T00:00:00",
+            }
+        })
+
+        result = run_ranking(state_manager=state)
+
+        self.assertTrue(result["data"])
+        self.assertEqual(result["data"][0]["price_data_as_of"], "2026-10-24")
+
+    def test_report_cutoff_falls_back_to_earliest_data_date(self):
+        from src.reporting.report_engine import generate_daily_report
+
+        state = FakeState(ranks={
+            "data": [{"ticker": "2330", "entry_signal": "none"}],
+            "earliest_data_date": "2026-10-10",
+        })
+        with patch("src.reporting.report_engine.get_strong_buy_signals", return_value=[]):
+            report = generate_daily_report(state_manager=state)
+
+        self.assertIn("資料截止至</b>: <code>2026-10-10</code>", report)
+
 
 if __name__ == "__main__":
     unittest.main()
