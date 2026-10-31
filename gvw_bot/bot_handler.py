@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import html
+from datetime import datetime
 import subprocess
 import threading
 from typing import Optional, Dict, Any, List, Union, Tuple
@@ -39,7 +40,10 @@ from src.agent.issue_solver import IssueSolver, SecurityGuardrailError
 from src.agent.maintenance_agent import MaintenanceAgent
 from src.state.alert_subscribers import AlertSubscriptionStore
 from src.state.feedback_queue import FeedbackQueueStore
+from src.state.portfolio_store import PortfolioStore
 from src.state.state_manager import StateManager
+from src.analysis.trade_geometry import compute_trade_plan
+from src.analysis.portfolio_monitor import LEVEL_LABELS
 
 logger = logging.getLogger("gvw.bot")
 
@@ -47,6 +51,9 @@ BOT_COMMANDS = [
     {"command": "report", "description": "查看最新選股日報與全市場 Top 10"},
     {"command": "analyze", "description": "AI 個股深度評估（例如 /analyze 2330）"},
     {"command": "monitor", "description": "盤中即時突破信號掃描與推播開關"},
+    {"command": "watch", "description": "加入追蹤（例如 /watch 2330，以最近收盤價為進場價）"},
+    {"command": "unwatch", "description": "移除追蹤（例如 /unwatch 2330）"},
+    {"command": "portfolio", "description": "查看我的追蹤清單與目標/止損狀態"},
     {"command": "feedback", "description": "回報上則異常回覆內容供自我巡檢整理與修復"},
     {"command": "maintain", "description": "切換維護模式，自然語言診斷與修復"},
     {"command": "status", "description": "系統服務狀態、排程任務與健康管理"},
@@ -75,6 +82,7 @@ MENU_BUTTONS = {
     "⚠️ 問題回報": "/feedback",
     "🩺 系統狀態": "/status",
     "🔍 盤中監控": "/monitor",
+    "⭐ 我的追蹤": "/portfolio",
     "📥 採集資料": "/collect",
     "🏆 重新排名": "/rank",
     "⏰ 排程任務": "/jobs",
@@ -170,6 +178,7 @@ class TelegramBotHandler:
         ai_access_store: Optional[AIAnalysisAccessStore] = None,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
         alert_store: Optional[AlertSubscriptionStore] = None,
+        portfolio_store: Optional[PortfolioStore] = None,
         feedback_store: Optional[FeedbackQueueStore] = None,
         doctor: Optional[GVWDoctor] = None,
         issue_solver: Optional[IssueSolver] = None,
@@ -183,6 +192,7 @@ class TelegramBotHandler:
         self.ai_access_store = ai_access_store or AIAnalysisAccessStore()
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
         self.alert_store = alert_store or AlertSubscriptionStore()
+        self.portfolio_store = portfolio_store or PortfolioStore()
         self.feedback_store = feedback_store or FeedbackQueueStore()
         self.doctor = doctor or GVWDoctor(ai_provider_store=self.ai_provider_store)
         self.issue_solver = issue_solver or IssueSolver(ai_provider_store=self.ai_provider_store)
@@ -448,6 +458,47 @@ class TelegramBotHandler:
             res = run_ranking()
             count = len(res.get("data", []))
             self.send_message(chat_id, f"✅ 排名計算完成，已評估 {count} 檔標的。可輸入 /report 查看。")
+
+        elif cmd == "/watch":
+            parts = text.split(maxsplit=1) if text.startswith("/") else []
+            if len(parts) < 2:
+                self.send_message(chat_id, "用法：/watch 2330（以最近已採集的收盤價作為進場價加入追蹤）")
+                return
+            self._add_watch(chat_id, parts[1].strip())
+
+        elif cmd == "/unwatch":
+            parts = text.split(maxsplit=1) if text.startswith("/") else []
+            if len(parts) < 2:
+                self.send_message(chat_id, "用法：/unwatch 2330")
+                return
+            if self.portfolio_store.remove(parts[1].strip()):
+                self.send_message(chat_id, f"✅ 已移除追蹤 {parts[1].strip()}。")
+            else:
+                self.send_message(chat_id, f"❌ {parts[1].strip()} 不在你的追蹤清單中。")
+
+        elif cmd == "/portfolio":
+            entries = self.portfolio_store.list()
+            if not entries:
+                self.send_message(chat_id, "📋 目前沒有追蹤任何股票。輸入 /watch 2330 加入追蹤。")
+                return
+            state = StateManager()
+            lines = ["📋 <b>我的追蹤清單</b>"]
+            for ticker, entry in entries.items():
+                stock_data = state.get_stock_data(ticker) or {}
+                plan = compute_trade_plan(stock_data.get("prices", []))
+                if plan:
+                    levels = (
+                        f"目標1 {plan['target_1']} / 目標2 {plan['target_2']} / 止損 {plan['stop_loss']}"
+                    )
+                else:
+                    levels = "尚無交易計畫（資料不足或無平台）"
+                alerted = entry.get("alerted", {})
+                status = "、".join(LEVEL_LABELS[k] for k, v in alerted.items() if v) or "尚未觸發任何目標"
+                lines.append(
+                    f"• <b>{html.escape(ticker)}</b> 進場 {entry['entry_price']:.2f} 元"
+                    f"（{entry['entry_date']}）：{levels} — {status}"
+                )
+            self.send_message(chat_id, "\n".join(lines))
 
         elif cmd in {"/analyze", "/request_ai"}:
             if chat_type != "private":
@@ -1250,6 +1301,13 @@ class TelegramBotHandler:
             self._request_ai_access(chat_id, actor_id, callback.get("from", {}))
             return
 
+        if data.startswith("watch:"):
+            ticker = data[len("watch:"):].strip()
+            chat_id = callback.get("message", {}).get("chat", {}).get("id") or actor_id
+            self._answer_callback_query(callback_id, f"已加入追蹤 {ticker}")
+            self._add_watch(chat_id, ticker)
+            return
+
         # 2. Owner-only admin callbacks
         if not self._is_owner(actor_id):
             self._answer_callback_query(callback_id, "僅限系統負責人操作。")
@@ -1400,6 +1458,25 @@ class TelegramBotHandler:
         )
         response.raise_for_status()
 
+    def _add_watch(self, chat_id: Union[int, str], ticker: str) -> bool:
+        t = str(ticker).strip()
+        if not t:
+            return False
+        state = StateManager()
+        stock_data = state.get_stock_data(t) or {}
+        prices = stock_data.get("prices", [])
+        if not prices:
+            self.send_message(chat_id, f"❌ 目前沒有 {t} 的已採集資料，無法加入追蹤；請先 /collect 或等待排程採集。")
+            return False
+        entry_price = float(prices[-1].get("close"))
+        self.portfolio_store.add(t, entry_price, datetime.now().strftime("%Y-%m-%d"), chat_id)
+        self.send_message(
+            chat_id,
+            f"⭐ 已加入追蹤 <b>{t}</b>（進場價 {entry_price:.2f} 元，{datetime.now().strftime('%Y-%m-%d')}），"
+            "盤中每 30 分鐘自動檢查目標/止損。",
+        )
+        return True
+
     def _send_stock_analysis(self, chat_id: Union[int, str], ticker: str):
         self.send_message(chat_id, f"⏳ 正在準備資料並分析 {ticker}，請稍候...")
         try:
@@ -1512,6 +1589,7 @@ class TelegramBotHandler:
         else:
             lines.append("💡 如需 AI 深度多空邏輯評估，請點擊下方按鈕提出申請：")
             btn = [[{"text": "📝 申請 AI 分析權限", "callback_data": f"ai_request_access:{user_id or chat_id}"}]]
+        btn.append([{"text": "⭐ 加入追蹤", "callback_data": f"watch:{ticker}"}])
 
         self.send_message(
             chat_id,

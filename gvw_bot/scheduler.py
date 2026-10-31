@@ -18,6 +18,8 @@ from src.analysis.intraday import run_intraday_monitoring
 from src.reporting.report_engine import generate_daily_report
 from src.reporting.telegram_notifier import send_telegram_message
 from src.state.alert_subscribers import AlertSubscriptionStore
+from src.state.portfolio_store import PortfolioStore
+from src.analysis.portfolio_monitor import check_portfolio
 from src.config import TELEGRAM_HOME_CHANNEL
 from src.autopilot.pilot import AutoPilot
 from src.diagnostics.doctor import GVWDoctor
@@ -93,10 +95,12 @@ class GVWScheduler:
         self,
         heartbeat_mgr: Optional[HeartbeatManager] = None,
         alert_store: Optional[AlertSubscriptionStore] = None,
+        portfolio_store: Optional[PortfolioStore] = None,
     ):
         self.hb = heartbeat_mgr or HeartbeatManager()
         self.orchestrator = Orchestrator()
         self.alert_store = alert_store or AlertSubscriptionStore()
+        self.portfolio_store = portfolio_store or PortfolioStore()
         self.autopilot = AutoPilot(
             state=StateManager(),
             doctor=GVWDoctor(),
@@ -211,6 +215,15 @@ class GVWScheduler:
             grace_minutes=60,
         ))
 
+        # 12. Portfolio watchlist: target/stop-loss checks every 30 min during market hours
+        self.jobs.append(ScheduledJob(
+            name="portfolio_check",
+            func=self.job_portfolio_check,
+            interval_minutes=30,
+            weekdays_only=True,
+            active_hours=(9.5, 14.5),
+        ))
+
     # --- Job Implementations ---
 
     def job_premarket_data_check(self) -> None:
@@ -248,6 +261,13 @@ class GVWScheduler:
                 for alert in alerts:
                     send_telegram_message(alert, chat_id=chat_id)
         self.hb.update_job_status("intraday_monitor", "ok", message=f"Generated {len(alerts)} alerts")
+
+    def job_portfolio_check(self) -> None:
+        logger.info("[JOB] Checking portfolio watchlist for target/stop-loss hits...")
+        alerts = check_portfolio(self.portfolio_store, StateManager())
+        for alert in alerts:
+            send_telegram_message(alert["message"], chat_id=alert["chat_id"])
+        self.hb.update_job_status("portfolio_check", "ok", message=f"Generated {len(alerts)} alerts")
 
     def job_daily_collection(self) -> None:
         logger.info("[JOB] Running Daily Post-Market Collection...")
