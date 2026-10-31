@@ -532,5 +532,54 @@ class ProviderResilienceTests(unittest.TestCase):
             self.assertEqual(len(numbered_rows), 10)
 
 
+    def test_yahoo_429_backs_off_exponentially_before_next_symbol(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{
+                        "open": [100], "high": [105], "low": [99],
+                        "close": [103], "volume": [1000],
+                    }]},
+                }],
+                "error": None,
+            }
+        }
+        limited = unittest.mock.Mock(status_code=429)
+        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found.raise_for_status.return_value = None
+        adapter = YahooAdapter()
+        sleeps = []
+
+        with patch("src.providers.yahoo_adapter.requests.get", side_effect=[limited, found]), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=sleeps.append):
+            prices = adapter.fetch_price_history("6488", days=30)
+
+        self.assertEqual(len(prices), 1)
+        self.assertIn(1, sleeps)  # 2**0 backoff before retrying the next symbol
+
+    def test_yahoo_throttle_spaces_consecutive_requests(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{"close": [103], "volume": [1000]}]},
+                }],
+                "error": None,
+            }
+        }
+        ok = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        ok.raise_for_status.return_value = None
+        adapter = YahooAdapter()
+        sleeps = []
+
+        with patch("src.providers.yahoo_adapter.requests.get", return_value=ok), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=sleeps.append):
+            adapter.fetch_price_history("2311", days=30)
+            adapter.fetch_price_history("2311", days=30)
+
+        self.assertTrue(any(0 < s <= 0.5 for s in sleeps), "throttle must sleep between requests")
+
+
 if __name__ == "__main__":
     unittest.main()
