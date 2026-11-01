@@ -99,3 +99,15 @@ class TestFinMindAdapter(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+    def test_fs_history_cumulative_to_single_quarter(self):
+        fs = [
+            {"date": "2025-03-31", "type": "Revenue", "value": 100},
+            {"date": "2025-06-30", "type": "Revenue", "value": 200},
+            {"date": "2025-09-30", "type": "Revenue", "value": 300},
+            {"date": "2025-12-31", "type": "Revenue", "value": 400},
+            {"date": "2026-03-31", "type": "Revenue", "value": 150},
+        ]
+        hist = self.adapter._fs_history(fs)
+        self.assertEqual([h["revenue"] for h in hist], [100, 100, 100, 100, 150])
+        self.assertEqual(hist[-1]["period"], "2026Q1")

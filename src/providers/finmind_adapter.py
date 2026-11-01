@@ -127,7 +127,7 @@ class FinMindAdapter(DataProvider):
 
     def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
         self.logger.info("Fetching FinMind stock data for %s", ticker)
-        start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d")
         fs_data = self._get_dataset(
             "TaiwanStockFinancialStatements", ticker, start_date=start_date
         )
@@ -146,6 +146,7 @@ class FinMindAdapter(DataProvider):
             "financials": {
                 "income_statement": self._normalize_fs(fs_data),
                 "balance_sheet": self._normalize_bs(bs_data),
+                "history": self._fs_history(fs_data),
             },
             "basic_info": self._normalize_info(info_data, per_data),
             "source": "finmind",
@@ -190,6 +191,34 @@ class FinMindAdapter(DataProvider):
                 pass
 
         return res
+
+    def _fs_history(self, fs_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """FinMind 財報為累計值，轉換成單季序列供 YoY/QoQ 計算 (Issue #74)。"""
+        by_date: Dict[str, Dict[str, float]] = {}
+        for item in fs_data:
+            d = str(item.get("date", ""))[:10]
+            metric = item.get("type")
+            if d and metric:
+                by_date.setdefault(d, {})[metric] = float(item.get("value", 0.0) or 0)
+
+        history: List[Dict[str, Any]] = []
+        prev_cum: Dict[str, float] = {}
+        for d in sorted(by_date):
+            cum = by_date[d]
+            parts = d.split("-")
+            try:
+                period = f"{int(parts[0])}Q{(int(parts[1]) - 1) // 3 + 1}"
+            except (ValueError, IndexError):
+                period = d
+            history.append({
+                "date": d,
+                "period": period,
+                "revenue": cum.get("Revenue", 0.0) - prev_cum.get("Revenue", 0.0),
+                "net_income": cum.get("IncomeAfterTaxes", 0.0) - prev_cum.get("IncomeAfterTaxes", 0.0),
+                "eps": cum.get("EPS", 0.0) - prev_cum.get("EPS", 0.0),
+            })
+            prev_cum = cum
+        return history
 
     def _normalize_bs(self, bs_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not bs_data:

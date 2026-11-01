@@ -128,9 +128,10 @@ def _compute_growth_metrics(
     eps_yoy = None
     eps_qoq = None
 
-    curr_rev = float(pl.get("revenue", 0) or 0)
-    curr_ni = float(pl.get("net_income", 0) or 0)
-    curr_eps = float(pl.get("eps", 0) or 0)
+    curr = history[-1] if isinstance(history, list) and history else pl
+    curr_rev = float(curr.get("revenue", 0) or 0)
+    curr_ni = float(curr.get("net_income", 0) or 0)
+    curr_eps = float(curr.get("eps", 0) or 0)
 
     if isinstance(history, list) and len(history) >= 2:
         prev_q = history[-2] if isinstance(history[-2], dict) else {}
