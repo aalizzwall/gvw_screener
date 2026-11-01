@@ -55,7 +55,7 @@ BOT_COMMANDS = [
     {"command": "unwatch", "description": "移除追蹤（例如 /unwatch 2330）"},
     {"command": "portfolio", "description": "查看我的追蹤清單與目標/止損狀態"},
     {"command": "feedback", "description": "回報上則異常回覆內容供自我巡檢整理與修復"},
-    {"command": "maintain", "description": "切換維護模式，自然語言診斷與修復"},
+    {"command": "ask", "description": "向維護 AI 提問（例如 /ask 為什麼 2330 的 PB 是空白？）"},
     {"command": "status", "description": "系統服務狀態、排程任務與健康管理"},
     {"command": "ai", "description": "AI 智慧控制中心（模型順序、健康檢測、地端設定）"},
     {"command": "update", "description": "一鍵從 GitHub 更新並重啟服務"},
@@ -205,7 +205,6 @@ class TelegramBotHandler:
         self.running = False
         self._updating = False
         self._fixing = False
-        self.maintenance_mode_chats: set = set()
         self.pending_analysis_chats: Dict[Union[int, str], str] = {}
         self.pending_feedback_note_chats: Dict[Union[int, str], int] = {}
         self.last_bot_replies: Dict[Union[int, str], List[str]] = {}
@@ -333,7 +332,7 @@ class TelegramBotHandler:
             "/status", "/jobs", "/monitor",
             "/collect", "/rank", "/ai_requests",
             "/ai", "/ai_status", "/ai_models", "/ai_set", "/ai_add", "/ai_remove", "/ai_check",
-            "/ai_local", "/update", "/doctor", "/fix", "/maintain", "/audit", "/check_github",
+            "/ai_local", "/update", "/doctor", "/fix", "/ask", "/audit", "/check_github",
         }
         if cmd in owner_only_commands and not self._is_owner(user_id):
             self.send_message(chat_id, "⛔ 此功能僅限系統負責人使用。", user_id=user_id)
@@ -357,7 +356,7 @@ class TelegramBotHandler:
             if is_owner:
                 msg += (
                     "\n🛠️ <b>系統管理與運維指令（負責人專用）：</b>\n"
-                    "• <code>/maintain</code>：切換系統維護模式（自然語言自主排查主機、日誌與資料庫）\n"
+                    "• <code>/ask 問題</code>：自然語言向維護 AI 自主排查主機、日誌與資料庫\n"
                     "• <code>/status</code>：服務運行狀態、排程任務管理與健康診斷面板\n"
                     "• <code>/ai</code>：AI 智慧控制中心（視覺化調整模型順序、健康檢測、地端設定）\n"
                     "• <code>/update</code>：一鍵從 GitHub 拉取最新代碼並重啟服務\n"
@@ -699,53 +698,18 @@ class TelegramBotHandler:
                 name="GVWAuditThread",
             ).start()
 
-        elif cmd == "/maintain":
-            if chat_id in self.maintenance_mode_chats:
-                self.maintenance_mode_chats.remove(chat_id)
-                self.maintenance_agent.clear_session(str(chat_id))
-                self.send_message(
-                    chat_id,
-                    "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
-                )
-            else:
-                self.maintenance_mode_chats.add(chat_id)
-                self.send_message(
-                    chat_id,
-                    "🛠️ <b>已進入【系統維護模式】</b>\n\n"
-                    "維護 Agent 採 Pi 架構：擁有 bash / read / write / edit 四大原語，可自主探索並排查整台主機。\n"
-                    "⚠️ 它能執行指令與修改檔案（已限制：逾時 60 秒、拒絕破壞性指令、遮蔽金鑰、不可寫入 .env）。\n"
-                    "在此模式下，您可以直接傳送任何自然語言問題，例如：\n"
-                    "• <i>為什麼 PB PE 股利 是空白的？</i>\n"
-                    "• <i>那 2330 呢？幫我看目前資料庫中的狀態</i>\n"
-                    "• <i>檢查最近排程執行狀況與是否有異常日誌？</i>\n\n"
-                    "👉 常用指令：\n"
-                    "• <code>reset</code> 或 <code>/reset</code>：清除對話記憶\n"
-                    "• <code>exit</code> 或 <code>/maintain</code>：隨時退出此模式",
-                )
-
-        elif chat_id in self.maintenance_mode_chats:
-            user_msg = text.strip()
-            if user_msg.lower() in ["/exit", "exit", "退出", "離開"]:
-                self.maintenance_mode_chats.remove(chat_id)
-                self.maintenance_agent.clear_session(str(chat_id))
-                self.send_message(
-                    chat_id,
-                    "🚪 <b>已退出【系統維護模式】</b>，返回正常選股與推播模式。",
-                )
-            elif user_msg.lower() in ["/reset", "reset", "/clear", "clear", "重置", "清除"]:
-                self.maintenance_agent.clear_session(str(chat_id))
-                self.send_message(
-                    chat_id,
-                    "🔄 <b>已重置維護對話記憶</b>，您可以開始新的問題排查。",
-                )
-            else:
-                self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
-                threading.Thread(
-                    target=self._handle_maintenance_query,
-                    args=(chat_id, user_msg),
-                    daemon=True,
-                    name=f"GVWMaintenanceThread-{chat_id}",
-                ).start()
+        elif cmd == "/ask":
+            question = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+            if not question:
+                self.send_message(chat_id, "用法：<code>/ask 為什麼 2330 的 PB 是空白？</code>")
+                return
+            self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
+            threading.Thread(
+                target=self._handle_maintenance_query,
+                args=(chat_id, question),
+                daemon=True,
+                name=f"GVWMaintenanceThread-{chat_id}",
+            ).start()
 
         elif self.pending_analysis_chats.get(chat_id) == str(user_id or ""):
             ticker = text.strip()
@@ -1629,7 +1593,6 @@ class TelegramBotHandler:
                         or text.startswith("/")
                         or text in MENU_BUTTONS
                         or self.pending_analysis_chats.get(chat_id) == str(user_id or "")
-                        or chat_id in self.maintenance_mode_chats
                     ):
                         command = text.split()[0] if text.startswith("/") else text
                         self.handle_command(

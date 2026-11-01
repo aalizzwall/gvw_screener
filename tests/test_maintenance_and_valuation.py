@@ -388,59 +388,27 @@ class TestTWSEValuationData(unittest.TestCase):
         self.assertEqual(info["yield"], 1.8)
 
 
-class TestTelegramBotMaintenanceMode(unittest.TestCase):
+class TestTelegramBotAskCommand(unittest.TestCase):
     def setUp(self):
         self.bot = TelegramBotHandler(token="test-token", owner_user_id="10")
         self.bot.send_message = Mock()
 
-    def test_non_owner_cannot_enter_maintain_mode(self):
-        self.bot.handle_command(20, "/maintain", "/maintain", user_id=20)
+    def test_non_owner_cannot_use_ask(self):
+        self.bot.handle_command(20, "/ask", "/ask 為什麼 PB 是空白", user_id=20)
         self.assertIn("僅限系統負責人", self.bot.send_message.call_args.args[1])
-        self.assertNotIn(20, self.bot.maintenance_mode_chats)
 
-    def test_owner_can_toggle_maintain_mode(self):
-        # Enter maintenance mode
-        self.bot.handle_command(10, "/maintain", "/maintain", user_id=10)
-        self.assertIn(10, self.bot.maintenance_mode_chats)
-        calls = [c.args[1] for c in self.bot.send_message.call_args_list]
-        self.assertTrue(any("已進入【系統維護模式】" in c for c in calls))
+    def test_ask_without_question_shows_usage(self):
+        self.bot.handle_command(10, "/ask", "/ask", user_id=10)
+        self.assertIn("用法", self.bot.send_message.call_args.args[1])
 
-        # Exit maintenance mode via /maintain again
-        self.bot.handle_command(10, "/maintain", "/maintain", user_id=10)
-        self.assertNotIn(10, self.bot.maintenance_mode_chats)
-        calls = [c.args[1] for c in self.bot.send_message.call_args_list]
-        self.assertTrue(any("已退出【系統維護模式】" in c for c in calls))
-
-    def test_maintenance_mode_processes_natural_language_query(self):
-        # Put into maintenance mode
-        self.bot.maintenance_mode_chats.add(10)
-
+    def test_ask_routes_question_to_maintenance_agent(self):
         with patch.object(self.bot.maintenance_agent, "ask", return_value="經診斷，系統正常。") as mock_ask:
-            self.bot.handle_command(10, "為什麼 PB PE 是空白的？", "為什麼 PB PE 是空白的？", user_id=10)
-
-            # Wait briefly for daemon thread
-            time.sleep(0.1)
-
+            self.bot.handle_command(10, "/ask", "/ask 為什麼 PB PE 是空白的？", user_id=10)
+            time.sleep(0.1)  # daemon thread
             mock_ask.assert_called_once_with("為什麼 PB PE 是空白的？", session_id="10")
             calls = [c.args[1] for c in self.bot.send_message.call_args_list]
             self.assertTrue(any("分析您的問題" in c for c in calls))
             self.assertTrue(any("經診斷，系統正常。" in c for c in calls))
-
-    def test_maintenance_mode_exit_keyword(self):
-        self.bot.maintenance_mode_chats.add(10)
-        self.bot.handle_command(10, "exit", "exit", user_id=10)
-        self.assertNotIn(10, self.bot.maintenance_mode_chats)
-        calls = [c.args[1] for c in self.bot.send_message.call_args_list]
-        self.assertTrue(any("已退出【系統維護模式】" in c for c in calls))
-
-    def test_maintenance_mode_reset_keyword(self):
-        self.bot.maintenance_mode_chats.add(10)
-        with patch.object(self.bot.maintenance_agent, "clear_session") as mock_clear:
-            self.bot.handle_command(10, "reset", "reset", user_id=10)
-            self.assertIn(10, self.bot.maintenance_mode_chats)
-            mock_clear.assert_called_once_with("10")
-            calls = [c.args[1] for c in self.bot.send_message.call_args_list]
-            self.assertTrue(any("已重置維護對話記憶" in c for c in calls))
 
 
 class TestValuationServiceAndIntegration(unittest.TestCase):
