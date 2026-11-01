@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterable, Dict, List, Optional
 
@@ -8,6 +9,18 @@ import aiohttp
 import requests
 
 from src.interfaces.data_provider import DataProvider
+
+YAHOO_MIN_REQUEST_INTERVAL = 0.5
+_last_request_ts = 0.0
+
+
+def _throttle():
+    """ponytail: global throttle, per-session state if throughput matters."""
+    global _last_request_ts
+    wait = YAHOO_MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_ts)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_ts = time.monotonic()
 
 
 class TickerNotFoundError(Exception):
@@ -38,7 +51,9 @@ class YahooAdapter(DataProvider):
 
     def fetch_price_history(self, ticker: str, days: int = 365) -> List[Dict[str, Any]]:
         not_found_count = 0
+        attempt = 0
         for symbol in self._symbols(ticker):
+            _throttle()
             try:
                 response = requests.get(
                     self.CHART_URL.format(symbol=symbol),
@@ -47,6 +62,13 @@ class YahooAdapter(DataProvider):
                 )
             except requests.RequestException as exc:
                 self.logger.warning("Yahoo price history failed for %s: %s", symbol, exc)
+                continue
+
+            if response.status_code == 429:
+                backoff = min(2 ** attempt, 30)
+                self.logger.warning("Yahoo rate limited (429) for %s, backing off %ss", symbol, backoff)
+                time.sleep(backoff)
+                attempt += 1
                 continue
 
             if response.status_code == 404:
@@ -175,6 +197,7 @@ class YahooAdapter(DataProvider):
         batch: list[str],
     ) -> List[Dict[str, Any]]:
         async def fetch_latest(symbol: str) -> Optional[Dict[str, Any]]:
+            _throttle()
             try:
                 async with session.get(
                     self.CHART_URL.format(symbol=symbol),

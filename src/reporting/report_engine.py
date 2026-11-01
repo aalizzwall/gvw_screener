@@ -81,11 +81,13 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
     report_data = state.get_ranks()
     all_data = report_data.get('data', [])
     data_dates = [row.get('price_data_as_of') for row in all_data]
-    data_cutoff = (
-        min(data_dates)
-        if data_dates and all(isinstance(date, str) and date for date in data_dates)
-        else '未知'
-    )
+    present_dates = [d for d in data_dates if isinstance(d, str) and d]
+    if present_dates and len(present_dates) == len(data_dates):
+        data_cutoff = min(present_dates)
+    else:
+        # Legacy rank payloads have no per-row cutoff: fall back to the
+        # persisted earliest data date, else report 未知.
+        data_cutoff = report_data.get('earliest_data_date') or '未知'
 
     if not all_data:
         return "📅 <b>資料截止至</b>: <code>未知</code>\n目前沒有可用的排名資料。\n"

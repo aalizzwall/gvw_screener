@@ -531,6 +531,98 @@ class ProviderResilienceTests(unittest.TestCase):
             numbered_rows = re.findall(r"(?m)^\d+\. ", section)
             self.assertEqual(len(numbered_rows), 10)
 
+    def test_run_ranking_rows_carry_price_data_as_of(self):
+        from src.analysis.ranker import run_ranking
+
+        class FakeRankState(FakeState):
+            def list_stock_tickers(self):
+                return list(self.stock_data.keys())
+
+            def get_stock_data(self, ticker):
+                return dict(self.stock_data.get(ticker, {}))
+
+            def get_market_index(self):
+                return {}
+
+            def save_ranks(self, ranks):
+                self.ranks = dict(ranks)
+
+        prices = [{"date": f"2026-10-{day:02d}", "close": 100 + day} for day in range(1, 25)]
+        state = FakeRankState(stock_data={
+            "2330": {
+                "ticker": "2330",
+                "name": "台積電",
+                "prices": prices,
+                "updated_at": "2026-10-24T00:00:00",
+            }
+        })
+
+        result = run_ranking(state_manager=state)
+
+        self.assertTrue(result["data"])
+        self.assertEqual(result["data"][0]["price_data_as_of"], "2026-10-24")
+
+    def test_report_cutoff_falls_back_to_earliest_data_date(self):
+        from src.reporting.report_engine import generate_daily_report
+
+        state = FakeState(ranks={
+            "data": [{"ticker": "2330", "entry_signal": "none"}],
+            "earliest_data_date": "2026-10-10",
+        })
+        with patch("src.reporting.report_engine.get_strong_buy_signals", return_value=[]):
+            report = generate_daily_report(state_manager=state)
+
+        self.assertIn("資料截止至</b>: <code>2026-10-10</code>", report)
+
+
+    def test_yahoo_429_backs_off_exponentially_before_next_symbol(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{
+                        "open": [100], "high": [105], "low": [99],
+                        "close": [103], "volume": [1000],
+                    }]},
+                }],
+                "error": None,
+            }
+        }
+        limited = unittest.mock.Mock(status_code=429)
+        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found.raise_for_status.return_value = None
+        adapter = YahooAdapter()
+        sleeps = []
+
+        with patch("src.providers.yahoo_adapter.requests.get", side_effect=[limited, found]), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=sleeps.append):
+            prices = adapter.fetch_price_history("6488", days=30)
+
+        self.assertEqual(len(prices), 1)
+        self.assertIn(1, sleeps)  # 2**0 backoff before retrying the next symbol
+
+    def test_yahoo_throttle_spaces_consecutive_requests(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{"close": [103], "volume": [1000]}]},
+                }],
+                "error": None,
+            }
+        }
+        ok = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        ok.raise_for_status.return_value = None
+        adapter = YahooAdapter()
+        sleeps = []
+
+        with patch("src.providers.yahoo_adapter.requests.get", return_value=ok), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=sleeps.append):
+            adapter.fetch_price_history("2311", days=30)
+            adapter.fetch_price_history("2311", days=30)
+
+        self.assertTrue(any(0 < s <= 0.5 for s in sleeps), "throttle must sleep between requests")
+
 
 if __name__ == "__main__":
     unittest.main()

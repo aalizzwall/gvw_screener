@@ -288,7 +288,7 @@ def run_ranking(state_manager: Optional[IStateRepository] = None) -> Dict[str, A
     global_oldest_date = str(min(valid_dates)) if not valid_dates.empty else None
 
     full_results = df_results[[
-        'ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_score', 'q_rank', 'is_gvw_strict'
+        'ticker', 'name', 'final_score', 'entry_signal', 'm_rank', 't_score', 'q_rank', 'is_gvw_strict', 'price_data_as_of'
     ]].sort_values('final_score', ascending=False).to_dict('records')
 
     result_output = {
