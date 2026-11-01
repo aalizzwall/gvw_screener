@@ -79,7 +79,7 @@ class TestBotAndScheduler(unittest.TestCase):
         owner_payload = next(c.kwargs["json"] for c in calls if "setMyCommands" in c.args[0])
         self.assertEqual(owner_payload["scope"], {"type": "chat", "chat_id": 123})
         registered_cmds = [command["command"] for command in owner_payload["commands"]]
-        self.assertIn("maintain", registered_cmds)
+        self.assertIn("ask", registered_cmds)
         self.assertIn("status", registered_cmds)
         self.assertIn("report", registered_cmds)
         self.assertIn("ai", registered_cmds)
