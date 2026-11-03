@@ -724,10 +724,18 @@ class TelegramBotHandler:
             self._send_stock_lookup(chat_id, ticker, user_id=user_id)
 
         else:
-            ask_hint = (
-                "• 🛠️ <b>系統問題</b>：用 <code>/ask 為什麼 2330 的 PB 是空白？</code> 自然語言排查\n"
-                if self._is_owner(user_id) else ""
-            )
+            question = text.strip()
+            if question and self._is_owner(user_id):
+                # Owner window: plain text IS natural language (Hermes-style),
+                # no /ask prefix needed.
+                self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
+                threading.Thread(
+                    target=self._handle_maintenance_query,
+                    args=(chat_id, question),
+                    daemon=True,
+                    name=f"GVWMaintenanceThread-{chat_id}",
+                ).start()
+                return
             self.send_message(
                 chat_id,
                 "👋 <b>您好！歡迎使用 GVW Screener 智能選股機器人</b>\n\n"
@@ -735,8 +743,7 @@ class TelegramBotHandler:
                 "• 點擊下方功能按鈕：\n"
                 "  - 🏆 <b>Top 10 選股</b>：查看最新核心優質標的\n"
                 "  - 🔔 <b>盤中監控</b>：開啟/關閉即時突破通知\n"
-                "  - 🤖 <b>AI 個股分析</b>：深度多空 AI 評估\n"
-                f"{ask_hint}\n"
+                "  - 🤖 <b>AI 個股分析</b>：深度多空 AI 評估\n\n"
                 "輸入 /help 可查看完整指令說明。",
                 user_id=user_id,
             )
@@ -1478,6 +1485,7 @@ class TelegramBotHandler:
         self.send_message(
             chat_id,
             f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{format_telegram_html(report)}",
+            reply_markup={"inline_keyboard": [[{"text": "⭐ 加入追蹤", "callback_data": f"watch:{ticker}"}]]},
         )
 
     def _send_stock_lookup(
