@@ -83,11 +83,16 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
     data_dates = [row.get('price_data_as_of') for row in all_data]
     present_dates = [d for d in data_dates if isinstance(d, str) and d]
     if present_dates and len(present_dates) == len(data_dates):
-        data_cutoff = min(present_dates)
+        # "截止至" = newest row date. A stale row (suspended/delisted stock)
+        # must not make the whole report read months old; show it separately.
+        data_cutoff = max(present_dates)
+        oldest = min(present_dates)
+        stale_note = f"（其中行情最舊至 <code>{oldest}</code>）" if oldest != data_cutoff else ""
     else:
         # Legacy rank payloads have no per-row cutoff: fall back to the
         # persisted earliest data date, else report 未知.
         data_cutoff = report_data.get('earliest_data_date') or '未知'
+        stale_note = ""
 
     if not all_data:
         return "📅 <b>資料截止至</b>: <code>未知</code>\n目前沒有可用的排名資料。\n"
@@ -95,7 +100,7 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
     # 3. Strong Buy Signals (K-Line Verified)
     strong_signals = get_strong_buy_signals(state_manager=state)
     lines = [
-        f"📅 <b>資料截止至</b>: <code>{data_cutoff}</code>\n",
+        f"📅 <b>資料截止至</b>: <code>{data_cutoff}</code>{stale_note}\n",
         "🚨 <b>強烈買入訊號 (K-line Verified)</b>\n"
     ]
 

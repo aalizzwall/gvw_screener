@@ -410,6 +410,12 @@ class TestTelegramBotAskCommand(unittest.TestCase):
             self.assertTrue(any("分析您的問題" in c for c in calls))
             self.assertTrue(any("經診斷，系統正常。" in c for c in calls))
 
+    def test_free_text_welcome_hints_ask_for_owner_only(self):
+        self.bot.handle_command(10, "Top10 內容 日期瑕疵？", "Top10 內容 日期瑕疵？", user_id=10)
+        self.assertIn("/ask", self.bot.send_message.call_args.args[1])
+        self.bot.handle_command(20, "Top10 內容 日期瑕疵？", "Top10 內容 日期瑕疵？", user_id=20)
+        self.assertNotIn("/ask", self.bot.send_message.call_args.args[1])
+
 
 class TestValuationServiceAndIntegration(unittest.TestCase):
     def setUp(self):

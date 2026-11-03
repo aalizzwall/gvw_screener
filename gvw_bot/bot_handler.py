@@ -724,6 +724,10 @@ class TelegramBotHandler:
             self._send_stock_lookup(chat_id, ticker, user_id=user_id)
 
         else:
+            ask_hint = (
+                "• 🛠️ <b>系統問題</b>：用 <code>/ask 為什麼 2330 的 PB 是空白？</code> 自然語言排查\n"
+                if self._is_owner(user_id) else ""
+            )
             self.send_message(
                 chat_id,
                 "👋 <b>您好！歡迎使用 GVW Screener 智能選股機器人</b>\n\n"
@@ -731,7 +735,8 @@ class TelegramBotHandler:
                 "• 點擊下方功能按鈕：\n"
                 "  - 🏆 <b>Top 10 選股</b>：查看最新核心優質標的\n"
                 "  - 🔔 <b>盤中監控</b>：開啟/關閉即時突破通知\n"
-                "  - 🤖 <b>AI 個股分析</b>：深度多空 AI 評估\n\n"
+                "  - 🤖 <b>AI 個股分析</b>：深度多空 AI 評估\n"
+                f"{ask_hint}\n"
                 "輸入 /help 可查看完整指令說明。",
                 user_id=user_id,
             )
