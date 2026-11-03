@@ -724,6 +724,18 @@ class TelegramBotHandler:
             self._send_stock_lookup(chat_id, ticker, user_id=user_id)
 
         else:
+            question = text.strip()
+            if question and self._is_owner(user_id):
+                # Owner window: plain text IS natural language (Hermes-style),
+                # no /ask prefix needed.
+                self.send_message(chat_id, "🕵️‍♂️ 正在分析您的問題並調用診斷工具檢視系統狀態...")
+                threading.Thread(
+                    target=self._handle_maintenance_query,
+                    args=(chat_id, question),
+                    daemon=True,
+                    name=f"GVWMaintenanceThread-{chat_id}",
+                ).start()
+                return
             self.send_message(
                 chat_id,
                 "👋 <b>您好！歡迎使用 GVW Screener 智能選股機器人</b>\n\n"
@@ -1473,6 +1485,7 @@ class TelegramBotHandler:
         self.send_message(
             chat_id,
             f"🤖 <b>{ticker} 個股 AI 評估</b>\n\n{format_telegram_html(report)}",
+            reply_markup={"inline_keyboard": [[{"text": "⭐ 加入追蹤", "callback_data": f"watch:{ticker}"}]]},
         )
 
     def _send_stock_lookup(

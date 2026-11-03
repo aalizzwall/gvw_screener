@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock, patch
 
 from src.diagnostics.github_auditor import GitHubAuditor
@@ -52,7 +53,7 @@ class TestGitHubAuditor(unittest.TestCase):
                 "status": "completed",
                 "url": "https://github.com/test/actions/1",
                 "headBranch": "main",
-                "createdAt": "2026-10-26T12:00:00Z",
+                "createdAt": (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "event": "push",
             },
             {
@@ -61,7 +62,7 @@ class TestGitHubAuditor(unittest.TestCase):
                 "status": "completed",
                 "url": "https://github.com/test/actions/2",
                 "headBranch": "main",
-                "createdAt": "2026-10-26T12:00:00Z",
+                "createdAt": (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "event": "push",
             },
         ])

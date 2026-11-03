@@ -477,7 +477,8 @@ class ProviderResilienceTests(unittest.TestCase):
         with patch("src.reporting.report_engine.get_strong_buy_signals", return_value=[]):
             report = generate_daily_report(state_manager=state)
 
-        self.assertIn("資料截止至</b>: <code>2026-10-15</code>", report)
+        self.assertIn("資料截止至</b>: <code>2026-10-16</code>", report)
+        self.assertIn("行情最舊至 <code>2026-10-15</code>", report)
         self.assertNotIn("系統最後同步時間", report)
 
     def test_report_shows_unknown_if_any_source_date_is_missing(self):
