@@ -108,10 +108,12 @@ class TestGitHubAuditor(unittest.TestCase):
             patch.object(self.auditor, "check_code_scanning_alerts", return_value=[]),
             patch.object(self.auditor, "check_workflow_failures", return_value=[]),
             patch.object(self.auditor, "check_open_issues", return_value=[]),
+            patch.object(self.auditor, "hermes_agent_version", return_value="Hermes Agent v0.22.6"),
         ):
             res = self.auditor.run_full_audit()
             self.assertFalse(res["has_problems"])
             self.assertEqual(res["summary"]["alerts_count"], 0)
+            self.assertEqual(res["summary"]["hermes_agent_version"], "Hermes Agent v0.22.6")
 
     def test_format_issue_content(self):
         audit_res = {

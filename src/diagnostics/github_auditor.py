@@ -152,6 +152,16 @@ class GitHubAuditor:
             logger.warning(f"Failed to check open issues: {e}")
         return []
 
+    def hermes_agent_version(self) -> str:
+        """Version of the hermes-agent watching this bot (patrol metadata)."""
+        try:
+            res = subprocess.run(["hermes", "--version"], capture_output=True, text=True, timeout=10)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip().splitlines()[0]
+        except Exception:
+            pass
+        return "未偵測"
+
     def run_full_audit(self) -> Dict[str, Any]:
         """
         Executes comprehensive audit covering code scanning alerts,
@@ -185,6 +195,7 @@ class GitHubAuditor:
                 "alerts_count": len(alerts),
                 "failures_count": len(failures),
                 "open_issues_count": len(regular_issues),
+                "hermes_agent_version": self.hermes_agent_version(),
             },
         }
 
