@@ -77,6 +77,12 @@ class FeedbackQueueStore:
             if isinstance(r, dict) and r.get("status") == "pending"
         ]
 
+    def reports_with_status(self, status: str) -> List[Dict[str, Any]]:
+        return [
+            r for r in self._load().get("reports", [])
+            if isinstance(r, dict) and r.get("status") == status
+        ]
+
     def mark_resolved(self, report_id: int, status: str, resolution: str) -> bool:
         data = self._load()
         updated = False

@@ -233,6 +233,38 @@ class AutoPilot:
             return None
         return None
 
+    def _notify_reporter(self, rep: Dict[str, Any], text: str) -> None:
+        try:
+            self._notify(text, chat_id=rep.get("chat_id"))
+        except Exception:
+            logger.warning("Reporter notification failed for feedback #%s", rep.get("id"))
+
+    def _notify_closed_issues(self) -> List[Dict[str, Any]]:
+        """Reports escalated to an Issue: once that Issue is closed (PR merged), ping the reporter."""
+        try:
+            open_numbers = {i.get("number") for i in self.doctor.check_open_issues()}
+        except Exception:
+            return []
+        fixed = []
+        for rep in self.feedback_store.reports_with_status("issue_opened"):
+            match = re.search(r"issues/(\d+)", str(rep.get("resolution", "")))
+            if not match or int(match.group(1)) in open_numbers:
+                continue
+            number = int(match.group(1))
+            resolution = f"Issue #{number} 已關閉（修復完成）"
+            self.feedback_store.mark_resolved(rep["id"], "fixed", resolution)
+            try:
+                self._notify(
+                    f"✅ 您的問題回報 #{rep['id']} 已修復：Issue #{number}\n"
+                    f"原問題：{rep.get('user_input', '')[:120]}",
+                    chat_id=rep.get("chat_id"),
+                )
+            except Exception:
+                logger.warning("Reporter notification failed for feedback #%s", rep["id"])
+            self._record(f"問題回報 #{rep['id']} 修復完成：Issue #{number}")
+            fixed.append({"id": rep["id"], "action": "fixed", "detail": resolution})
+        return fixed
+
     def triage_feedback_reports(self) -> List[Dict[str, Any]]:
         """
         Evaluates user-reported faulty replies (capturing the last 3 bot replies) during self-patrol:
@@ -241,9 +273,10 @@ class AutoPilot:
         3. AI provider failure / timeout / truncation -> triggers AI health check & provider failover.
         4. Code / formatting / logic bugs -> deduplicates and opens a GitHub Issue.
         """
+        fixed = self._notify_closed_issues()
         pending = self.feedback_store.pending_reports()
         if not pending:
-            return []
+            return fixed
 
         processed: List[Dict[str, Any]] = []
         summary_lines = ["📋 <b>【GVW 自我巡檢】使用者問題回報整理與評估</b>"]
@@ -313,6 +346,7 @@ class AutoPilot:
                         resolution += f"（評估：{eval_reason}）"
                     self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
                     self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
+                    self._notify_reporter(rep, f"✅ 您的問題回報 #{rep_id} 已自動修復：{resolution}")
                     summary_lines.append(f"• <b>回報 #{rep_id} ({ticker})</b>：🛠️ 可直接修復 ➔ {resolution}")
                     processed.append({"id": rep_id, "action": "auto_fixed", "detail": resolution})
                     continue
@@ -332,6 +366,7 @@ class AutoPilot:
                         resolution += f"（評估：{eval_reason}）"
                     self.feedback_store.mark_resolved(rep_id, "auto_fixed", resolution)
                     self._record(f"問題回報 #{rep_id} 自動修復：{resolution}")
+                    self._notify_reporter(rep, f"✅ 您的問題回報 #{rep_id} 已自動修復：{resolution}")
                     summary_lines.append(f"• <b>回報 #{rep_id}</b>：🛠️ 可直接修復 ➔ {resolution}")
                     processed.append({"id": rep_id, "action": "auto_fixed", "detail": resolution})
                     continue
@@ -375,6 +410,7 @@ class AutoPilot:
                 resolution = f"{act_label}：{url}"
                 self.feedback_store.mark_resolved(rep_id, "issue_opened", resolution)
                 self._record(f"問題回報 #{rep_id} 轉開單：{resolution}")
+                self._notify_reporter(rep, f"🧾 您的問題回報 #{rep_id} 已轉為 Issue 追蹤，修復完成後會通知您：{url}")
                 summary_lines.append(f"• <b>回報 #{rep_id}</b>：🧾 需改動程式碼，{act_label} ➔ {url}")
                 processed.append({"id": rep_id, "action": "issue_opened", "detail": url})
             except Exception as exc:
