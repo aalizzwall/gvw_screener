@@ -246,8 +246,23 @@ class TestAutoPilot(unittest.TestCase):
         self.assertIn("回覆 #1", issue_body)
         self.assertIn("回覆 #3", issue_body)
         self.assertEqual(self.pilot.feedback_store.pending_reports(), [])
-        self.notify.assert_called_once()
+        reporter_msgs = [c for c in self.notify.call_args_list if str(c.kwargs.get("chat_id")) == "100"]
+        self.assertEqual(len(reporter_msgs), 3)  # 2 auto-fixed + 1 issue-opened
+        self.assertTrue(any("已自動修復" in m.args[0] for m in reporter_msgs))
         self.assertIn("使用者問題回報整理與評估", self.notify.call_args.args[0])
+
+    def test_triage_notifies_reporter_when_issue_is_closed(self):
+        self.pilot.feedback_store.add_report(chat_id=100, user_id=100, user_input="按鈕壞了", note="ui bug")
+        self.doctor.report_unresolved_issue.return_value = (True, "https://github.com/test/issues/99")
+        self.doctor.check_open_issues.return_value = [{"number": 99}]
+        self.pilot.triage_feedback_reports()
+        # PR merged -> issue closed -> next patrol pings the reporter
+        self.doctor.check_open_issues.return_value = []
+        results = self.pilot.triage_feedback_reports()
+        self.assertEqual(results, [{"id": 1, "action": "fixed", "detail": "Issue #99 已關閉（修復完成）"}])
+        self.assertIn("已修復：Issue #99", self.notify.call_args_list[-1].args[0])
+        self.assertEqual(self.notify.call_args_list[-1].kwargs.get("chat_id"), "100")
+        self.assertEqual(self.pilot.feedback_store.reports_with_status("fixed")[0]["id"], 1)
 
     def test_triage_feedback_uses_autonomous_agent_decision_when_available(self):
         self.pilot.feedback_store.add_report(
