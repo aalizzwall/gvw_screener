@@ -171,6 +171,21 @@ class TestAIAnalyst(unittest.TestCase):
         )
         return response
 
+    def test_analysis_trips_global_rate_limit_breaker_on_429(self):
+        from src.providers.resilience import AdaptiveBackoff
+
+        responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
+        breaker = AdaptiveBackoff()
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key", adaptive_backoff=breaker)
+
+        self.assertEqual(report, "Gemma 分析結果")
+        self.assertTrue(breaker.is_on_cooldown())
+
     def test_falls_back_to_gemma_when_openai_is_rate_limited(self):
         responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
 

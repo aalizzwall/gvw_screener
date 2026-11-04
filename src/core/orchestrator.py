@@ -6,6 +6,7 @@ from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
+from src.providers.resilience import AdaptiveBackoff
 from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
 from src.config import (
     TTL_HIGH_SCORE,
@@ -27,10 +28,12 @@ class Orchestrator:
         self,
         state_manager: Optional[IStateRepository] = None,
         provider_factory: Optional[DataProviderFactory] = None,
-        scoring_strategy: Optional[ScoringStrategy] = None
+        scoring_strategy: Optional[ScoringStrategy] = None,
+        adaptive_backoff: Optional[AdaptiveBackoff] = None
     ):
         self.state: IStateRepository = state_manager or StateManager()
-        self.factory = provider_factory or DataProviderFactory()
+        self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
+        self.factory = provider_factory or DataProviderFactory(adaptive_backoff=self.adaptive_backoff)
         self.scoring_strategy = scoring_strategy or DefaultScoringStrategy()
 
     def calculate_quality_score(self, pl_data: Dict[str, Any], bs_data: Dict[str, Any]) -> float:
@@ -255,6 +258,14 @@ class Orchestrator:
         """
         Runs global oldest-first polling cycle across universe.
         """
+        if self.adaptive_backoff.is_on_cooldown():
+            logger.info(
+                "⏸️ Global API rate-limit cooldown active until %s; skipping collection.",
+                self.adaptive_backoff.retry_after(),
+            )
+            return {'fetches': 0, 'failures': 0, 'skips': 0}
+        batch_ratio = self.adaptive_backoff.get_batch_ratio(batch_ratio)
+
         self.update_market_index()
         universe_map = self.ensure_universe()
 
