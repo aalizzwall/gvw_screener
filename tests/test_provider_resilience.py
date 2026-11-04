@@ -1,13 +1,15 @@
 import re
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import ModuleType
 from unittest.mock import patch
 
 import requests
 from src.core.orchestrator import Orchestrator
 from src.providers.factory import DataProviderFactory
+from src.providers.finmind_adapter import FinMindAdapter
+from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds
 from src.providers.twse_adapter import TWSEAdapter
 from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
 
@@ -58,6 +60,9 @@ class FakeFactory:
     def fetch_price_history(self, ticker, days=365):
         self.price_calls += 1
         return self.prices
+
+    def fetch_market_index(self, index_ticker="TWII"):
+        return {}
 
 
 class ProviderResilienceTests(unittest.TestCase):
@@ -600,7 +605,10 @@ class ProviderResilienceTests(unittest.TestCase):
             prices = adapter.fetch_price_history("6488", days=30)
 
         self.assertEqual(len(prices), 1)
-        self.assertIn(1, sleeps)  # 2**0 backoff before retrying the next symbol
+        self.assertTrue(
+            any(1.0 <= s < 1.5 for s in sleeps),
+            f"expected jittered exponential backoff before retry, got {sleeps}",
+        )
 
     def test_yahoo_throttle_spaces_consecutive_requests(self):
         chart = {
@@ -623,6 +631,165 @@ class ProviderResilienceTests(unittest.TestCase):
             adapter.fetch_price_history("2311", days=30)
 
         self.assertTrue(any(0 < s <= 0.5 for s in sleeps), "throttle must sleep between requests")
+
+
+class AdaptiveBackoffTests(unittest.TestCase):
+    def test_trips_global_cooldown_when_rate_limited(self):
+        controller = AdaptiveBackoff()
+
+        until = controller.trip()
+
+        self.assertTrue(controller.is_on_cooldown())
+        self.assertIsNotNone(controller.retry_after())
+        self.assertGreater(until, datetime.now())
+
+    def test_second_rate_limit_escalates_cooldown(self):
+        controller = AdaptiveBackoff(cooldown_minutes=15.0, max_cooldown_minutes=30.0)
+        controller.trip()
+        second_until = controller.trip()
+
+        self.assertGreaterEqual(second_until - datetime.now(), timedelta(minutes=29.0))
+
+    def test_reset_closes_circuit(self):
+        controller = AdaptiveBackoff()
+        controller.trip()
+        controller.reset()
+
+        self.assertFalse(controller.is_on_cooldown())
+        self.assertIsNone(controller.retry_after())
+
+    def test_expired_cooldown_closes_circuit(self):
+        controller = AdaptiveBackoff(cooldown_minutes=0.0)
+        controller.trip()
+
+        self.assertFalse(controller.is_on_cooldown())
+
+    def test_batch_ratio_shrinks_during_cooldown(self):
+        controller = AdaptiveBackoff()
+        controller.trip()
+
+        self.assertEqual(controller.get_batch_ratio(0.1), 0.02)
+
+    def test_batch_ratio_uses_base_ratio_when_healthy(self):
+        controller = AdaptiveBackoff()
+
+        self.assertEqual(controller.get_batch_ratio(0.1), 0.1)
+
+
+class ExponentialBackoffTests(unittest.TestCase):
+    def test_backoff_grows_exponentially_with_jitter(self):
+        first = compute_backoff_seconds(0)
+        second = compute_backoff_seconds(1)
+        third = compute_backoff_seconds(3)
+
+        self.assertGreaterEqual(first, 1.0)
+        self.assertLess(first, 1.5)
+        self.assertGreaterEqual(second, 2.0)
+        self.assertLess(second, 3.0)
+        self.assertGreaterEqual(third, 8.0)
+        self.assertLess(third, 12.0)
+
+    def test_backoff_caps_at_maximum(self):
+        backoff = compute_backoff_seconds(10)
+
+        self.assertGreaterEqual(backoff, 30.0)
+        self.assertLess(backoff, 45.0)
+
+
+class AdaptiveCollectionCycleTests(unittest.TestCase):
+    def _make_orchestrator(self, state, factory):
+        return Orchestrator(
+            state_manager=state,
+            provider_factory=factory,
+            adaptive_backoff=AdaptiveBackoff(),
+        )
+
+    def test_collection_cycle_skips_all_stocks_during_global_cooldown(self):
+        state = FakeState()
+        factory = FakeFactory(None, [])
+        orchestrator = self._make_orchestrator(state, factory)
+        orchestrator.adaptive_backoff.trip()
+
+        stats = orchestrator.run_collection_cycle()
+
+        self.assertEqual(stats, {"fetches": 0, "failures": 0, "skips": 0})
+        self.assertEqual(factory.stock_calls, 0)
+        self.assertEqual(factory.price_calls, 0)
+
+    def test_collection_cycle_uses_adaptive_batch_ratio_when_healthy(self):
+        universe = {f"{1000 + i}": f"Stock {i}" for i in range(100)}
+        state = FakeState(universe=universe)
+        factory = FakeFactory(None, [])
+        orchestrator = self._make_orchestrator(state, factory)
+
+        stats = orchestrator.run_collection_cycle(batch_ratio=0.1)
+
+        self.assertEqual(factory.stock_calls, 10)
+
+
+class AdaptiveBackoffWiringTests(unittest.TestCase):
+    def test_yahoo_429_uses_jittered_exponential_backoff_then_recovers(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{
+                        "open": [100], "high": [105], "low": [99],
+                        "close": [103], "volume": [1000],
+                    }]},
+                }],
+                "error": None,
+            }
+        }
+        limited = unittest.mock.Mock(status_code=429)
+        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found.raise_for_status.return_value = None
+        adapter = YahooAdapter(adaptive_backoff=AdaptiveBackoff())
+        sleeps = []
+
+        with patch("src.providers.yahoo_adapter.requests.get", side_effect=[limited, found]), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=sleeps.append):
+            prices = adapter.fetch_price_history("6488", days=30)
+
+        self.assertEqual(len(prices), 1)
+        self.assertTrue(any(1.0 <= s < 1.5 for s in sleeps), f"expected jittered backoff, got {sleeps}")
+        self.assertFalse(adapter.adaptive_backoff.is_on_cooldown())
+        self.assertIsNone(adapter.adaptive_backoff.retry_after())
+
+    def test_yahoo_success_resets_rate_limit_circuit(self):
+        chart = {
+            "chart": {
+                "result": [{
+                    "timestamp": [1700000000],
+                    "indicators": {"quote": [{
+                        "open": [100], "high": [105], "low": [99],
+                        "close": [103], "volume": [1000],
+                    }]},
+                }],
+                "error": None,
+            }
+        }
+        ok = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        ok.raise_for_status.return_value = None
+        adapter = YahooAdapter(adaptive_backoff=AdaptiveBackoff())
+        adapter.adaptive_backoff.trip()
+
+        with patch("src.providers.yahoo_adapter.requests.get", return_value=ok), \
+             patch("src.providers.yahoo_adapter.time.sleep", side_effect=lambda seconds: None):
+            prices = adapter.fetch_price_history("2311", days=30)
+
+        self.assertEqual(len(prices), 1)
+        self.assertFalse(adapter.adaptive_backoff.is_on_cooldown())
+        self.assertIsNone(adapter.adaptive_backoff.retry_after())
+
+    def test_finmind_trips_rate_limit_circuit_on_429(self):
+        adapter = FinMindAdapter(adaptive_backoff=AdaptiveBackoff())
+        limited = unittest.mock.Mock(status_code=429)
+
+        with patch("src.providers.finmind_adapter.requests.get", return_value=limited):
+            result = adapter.fetch_stock_data("2330")
+
+        self.assertTrue(adapter.adaptive_backoff.is_on_cooldown())
 
 
 if __name__ == "__main__":
