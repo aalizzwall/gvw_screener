@@ -24,6 +24,7 @@ class TestGVWDoctor(unittest.TestCase):
             data_dir=self.data_dir,
             logs_dir=self.logs_dir,
             ai_provider_store=self.store,
+            heartbeat_file=os.path.join(self.data_dir, "heartbeat.json"),
         )
 
     def tearDown(self):
@@ -52,10 +53,10 @@ class TestGVWDoctor(unittest.TestCase):
         hb = self.doctor.get_heartbeat_status()
         self.assertFalse(hb["exists"])
 
-        # Create fresh heartbeat
+        # Create fresh heartbeat (HeartbeatManager write format)
         hb_path = os.path.join(self.data_dir, "heartbeat.json")
         with open(hb_path, "w") as f:
-            json.dump({"timestamp": "2026-10-21T21:00:00", "status": "running"}, f)
+            json.dump({"last_heartbeat": "2026-10-21T21:00:00", "status": "running"}, f)
 
         with patch("src.diagnostics.doctor.datetime") as mock_dt:
             from datetime import datetime
