@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import requests
 
-from src.config import DATA_DIR, LOGS_DIR
+from src.config import DATA_DIR, LOGS_DIR, BASE_DIR
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.analysis.ai_analyst import check_providers
 
@@ -113,14 +113,16 @@ class GVWDoctor:
     # ---------------------------------------------------------
     def get_heartbeat_status(self) -> Dict[str, Any]:
         """Checks heartbeat file freshness and service state."""
-        hb_path = os.path.join(self.data_dir, "heartbeat.json")
+        hb_path = os.path.join(BASE_DIR, "gvw_bot", "heartbeat.json")
+        if not os.path.exists(hb_path):
+            hb_path = os.path.join(self.data_dir, "heartbeat.json")
         if not os.path.exists(hb_path):
             return {"exists": False, "status": "unknown", "fresh": False, "age_seconds": None}
 
         try:
             with open(hb_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            ts = data.get("timestamp")
+            ts = data.get("last_heartbeat")  # 修正：改為讀取 last_heartbeat
             status = data.get("status", "unknown")
             age = None
             fresh = False
@@ -135,7 +137,7 @@ class GVWDoctor:
                 "status": status,
                 "fresh": fresh,
                 "age_seconds": age,
-                "last_run": data.get("last_run", {}),
+                "last_run": data.get("jobs", {}),
             }
         except Exception as e:
             return {"exists": True, "status": f"read_error: {e}", "fresh": False, "age_seconds": None}
