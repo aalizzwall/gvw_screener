@@ -17,6 +17,8 @@ from gvw_bot.heartbeat import HeartbeatManager
 
 logger = logging.getLogger("gvw.doctor")
 
+_DEFAULT_HEARTBEAT_MANAGER = HeartbeatManager()
+
 
 class GVWDoctor:
     """
@@ -34,7 +36,7 @@ class GVWDoctor:
         self.data_dir = data_dir
         self.logs_dir = logs_dir
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
-        self.heartbeat_file = heartbeat_file or HeartbeatManager().heartbeat_file
+        self.heartbeat_file = heartbeat_file or _DEFAULT_HEARTBEAT_MANAGER.heartbeat_file
 
     # ---------------------------------------------------------
     # 1. System & Hardware Metrics
@@ -138,6 +140,7 @@ class GVWDoctor:
                 "status": status,
                 "fresh": fresh,
                 "age_seconds": age,
+                "last_run": data.get("last_run", {}),
             }
         except Exception as e:
             return {"exists": True, "status": f"read_error: {e}", "fresh": False, "age_seconds": None}

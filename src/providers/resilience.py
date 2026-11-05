@@ -67,3 +67,11 @@ class AdaptiveBackoff:
         if self.cooldown_until is not None:
             return min(effective_base, MIN_BATCH_RATIO)
         return effective_base
+
+
+GLOBAL_ADAPTIVE_BACKOFF = AdaptiveBackoff()
+
+
+def get_global_adaptive_backoff() -> AdaptiveBackoff:
+    """Shared global AI rate-limit circuit breaker (tripped by all AI analyses)."""
+    return GLOBAL_ADAPTIVE_BACKOFF

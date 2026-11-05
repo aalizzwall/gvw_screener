@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterable, Dict, List, Optional
 
 import requests
 
 from src.interfaces.data_provider import DataProvider
-from src.providers.resilience import AdaptiveBackoff
+from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds
 
 
 class FinMindAdapter(DataProvider):
@@ -115,11 +116,14 @@ class FinMindAdapter(DataProvider):
         if self.token:
             params["token"] = self.token
 
+        attempt = 0
         try:
             response = requests.get(self.BASE_URL, params=params, timeout=20)
             if response.status_code == 429:
                 self.adaptive_backoff.trip()
                 self.logger.warning("FinMind API rate limit hit for %s:%s", dataset, data_id)
+                time.sleep(compute_backoff_seconds(attempt))
+                attempt += 1
                 return []
             response.raise_for_status()
             result = response.json()

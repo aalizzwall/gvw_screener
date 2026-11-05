@@ -14,6 +14,21 @@ from src.providers.twse_adapter import TWSEAdapter
 from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
 
 
+def _rate_limit_chart():
+    return {
+        "chart": {
+            "result": [{
+                "timestamp": [1700000000],
+                "indicators": {"quote": [{
+                    "open": [100], "high": [105], "low": [99],
+                    "close": [103], "volume": [1000],
+                }]},
+            }],
+            "error": None,
+        }
+    }
+
+
 class FakeState:
     def __init__(self, stock_data=None, ranks=None, universe=None):
         self.stock_data = dict(stock_data or {})
@@ -582,20 +597,8 @@ class ProviderResilienceTests(unittest.TestCase):
 
 
     def test_yahoo_429_backs_off_exponentially_before_next_symbol(self):
-        chart = {
-            "chart": {
-                "result": [{
-                    "timestamp": [1700000000],
-                    "indicators": {"quote": [{
-                        "open": [100], "high": [105], "low": [99],
-                        "close": [103], "volume": [1000],
-                    }]},
-                }],
-                "error": None,
-            }
-        }
         limited = unittest.mock.Mock(status_code=429)
-        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found = unittest.mock.Mock(status_code=200, json=lambda: _rate_limit_chart())
         found.raise_for_status.return_value = None
         adapter = YahooAdapter()
         sleeps = []
@@ -726,23 +729,22 @@ class AdaptiveCollectionCycleTests(unittest.TestCase):
 
         self.assertEqual(factory.stock_calls, 10)
 
+    def test_collection_cycle_shrinks_batch_during_degraded_health(self):
+        universe = {f"{1000 + i}": f"Stock {i}" for i in range(100)}
+        state = FakeState(universe=universe)
+        state.health = {t: {"status": "degraded", "failures": 1} for t in universe}
+        factory = FakeFactory(None, [])
+        orchestrator = self._make_orchestrator(state, factory)
+
+        stats = orchestrator.run_collection_cycle(batch_ratio=0.5)
+
+        self.assertEqual(factory.stock_calls, 2)
+
 
 class AdaptiveBackoffWiringTests(unittest.TestCase):
     def test_yahoo_429_uses_jittered_exponential_backoff_then_recovers(self):
-        chart = {
-            "chart": {
-                "result": [{
-                    "timestamp": [1700000000],
-                    "indicators": {"quote": [{
-                        "open": [100], "high": [105], "low": [99],
-                        "close": [103], "volume": [1000],
-                    }]},
-                }],
-                "error": None,
-            }
-        }
         limited = unittest.mock.Mock(status_code=429)
-        found = unittest.mock.Mock(status_code=200, json=lambda: chart)
+        found = unittest.mock.Mock(status_code=200, json=lambda: _rate_limit_chart())
         found.raise_for_status.return_value = None
         adapter = YahooAdapter(adaptive_backoff=AdaptiveBackoff())
         sleeps = []
@@ -785,10 +787,24 @@ class AdaptiveBackoffWiringTests(unittest.TestCase):
     def test_finmind_trips_rate_limit_circuit_on_429(self):
         adapter = FinMindAdapter(adaptive_backoff=AdaptiveBackoff())
         limited = unittest.mock.Mock(status_code=429)
+        sleeps = []
 
-        with patch("src.providers.finmind_adapter.requests.get", return_value=limited):
+        with patch("src.providers.finmind_adapter.requests.get", return_value=limited), \
+             patch("src.providers.finmind_adapter.time.sleep", side_effect=sleeps.append):
             result = adapter.fetch_stock_data("2330")
 
+        self.assertTrue(adapter.adaptive_backoff.is_on_cooldown())
+        self.assertTrue(sleeps)
+        self.assertTrue(any(1.0 <= s < 1.5 for s in sleeps), f"expected jittered backoff, got {sleeps}")
+
+    def test_twse_trips_rate_limit_circuit_on_429(self):
+        adapter = TWSEAdapter(adaptive_backoff=AdaptiveBackoff())
+        limited = unittest.mock.Mock(status_code=429)
+
+        with patch("src.providers.twse_adapter.requests.get", return_value=limited):
+            result = adapter.check_availability()
+
+        self.assertFalse(result)
         self.assertTrue(adapter.adaptive_backoff.is_on_cooldown())
 
 
