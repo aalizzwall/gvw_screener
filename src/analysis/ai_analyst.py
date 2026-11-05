@@ -16,7 +16,7 @@ from src.state.ai_provider import AIProviderPreferenceStore, parse_entry
 from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.analysis.model_prober import probe_available_models, get_intra_provider_pool
-from src.providers.resilience import AdaptiveBackoff
+from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds, get_global_adaptive_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -675,7 +675,7 @@ def analyze_stock(
     invalid response, ...) the next entry with a configured key is tried. This function
     never places orders. ``api_key``/``model`` override the OpenAI entries only.
     """
-    breaker = adaptive_backoff or AdaptiveBackoff()
+    breaker = adaptive_backoff or get_global_adaptive_backoff()
     if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 
@@ -697,6 +697,7 @@ def analyze_stock(
 
     attempted = {}
     last_exc = None
+    attempt = 0
     # Tier 2: Inter-Provider Fallback Loop
     for name, key, provider_model in candidates:
         label = _PROVIDERS[name]["label"]
@@ -720,6 +721,8 @@ def analyze_stock(
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 if status == 429:
                     breaker.trip()
+                    time.sleep(compute_backoff_seconds(attempt))
+                    attempt += 1
                 if status == 401:
                     # Invalid key affects all models in this provider, cascade to next provider (Tier 2)
                     break

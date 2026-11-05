@@ -66,6 +66,9 @@ class TestGVWDoctor(unittest.TestCase):
             self.assertTrue(hb["exists"])
             self.assertTrue(hb["fresh"])
             self.assertEqual(hb["age_seconds"], 60)
+            # Regression guard: doctor must keep returning the last_run field
+            # alongside the writer-aligned heartbeat fields.
+            self.assertIn("last_run", hb)
 
     def test_get_database_status(self):
         db_path = os.path.join(self.data_dir, "test.db")

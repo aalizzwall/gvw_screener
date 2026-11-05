@@ -6,7 +6,7 @@ from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
-from src.providers.resilience import AdaptiveBackoff
+from src.providers.resilience import AdaptiveBackoff, MIN_BATCH_RATIO
 from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
 from src.config import (
     TTL_HIGH_SCORE,
@@ -264,7 +264,6 @@ class Orchestrator:
                 self.adaptive_backoff.retry_after(),
             )
             return {'fetches': 0, 'failures': 0, 'skips': 0}
-        batch_ratio = self.adaptive_backoff.get_batch_ratio(batch_ratio)
 
         self.update_market_index()
         universe_map = self.ensure_universe()
@@ -278,6 +277,14 @@ class Orchestrator:
         rank_map = {item['ticker']: item.get('final_score', 0) for item in ranks}
         health_status = self.state.get_health_status()
 
+        effective_batch_ratio = self.adaptive_backoff.get_batch_ratio(batch_ratio)
+        degraded_health = any(
+            (health or {}).get("status") in ("dead", "degraded")
+            for health in health_status.values()
+        )
+        if degraded_health:
+            effective_batch_ratio = min(effective_batch_ratio, MIN_BATCH_RATIO)
+
         logger.info("\n--- Global Oldest-First Polling ---")
         all_stocks = []
         for t in universe_map:
@@ -290,7 +297,7 @@ class Orchestrator:
             all_stocks.append((t, oldest_update))
 
         all_stocks.sort(key=lambda x: x[1])
-        num_to_update = math.ceil(len(all_stocks) * batch_ratio)
+        num_to_update = math.ceil(len(all_stocks) * effective_batch_ratio)
 
         target_batch = []
         for t, _ in all_stocks:

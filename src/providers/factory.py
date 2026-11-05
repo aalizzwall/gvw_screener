@@ -25,7 +25,7 @@ class DataProviderFactory:
         adaptive_backoff: Optional[AdaptiveBackoff] = None,
     ):
         self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
-        self.twse = twse_adapter or TWSEAdapter()
+        self.twse = twse_adapter or TWSEAdapter(adaptive_backoff=self.adaptive_backoff)
         self.finmind = finmind_adapter or FinMindAdapter(adaptive_backoff=self.adaptive_backoff)
         self.yahoo = yahoo_adapter or YahooAdapter(adaptive_backoff=self.adaptive_backoff)
         self.valuation_service = valuation_service or get_valuation_service()
