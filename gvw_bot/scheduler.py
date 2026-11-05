@@ -331,7 +331,8 @@ class GVWScheduler:
                     f"發現異常項目需要跟進（{action_text}）：\n"
                     f"• 🛡️ CodeQL 弱點警報: <b>{alerts_count}</b> 項\n"
                     f"• ❌ 過去 7 天 CI 失敗: <b>{failures_count}</b> 次\n"
-                    f"• 📌 既有待跟進 Issue: <b>{issues_count}</b> 項\n\n"
+                    f"• 📌 既有待跟進 Issue: <b>{issues_count}</b> 項\n"
+                    f"• 🤖 Hermes Agent: {summary.get('hermes_agent_version', '未偵測')}\n\n"
                     f"🔗 <b>GitHub Issue 追蹤連結：</b>\n"
                     f"{issue_url}"
                 )
@@ -347,7 +348,8 @@ class GVWScheduler:
                     "本週系統與程式碼庫檢查全數正常：\n"
                     f"• 🛡️ CodeQL 弱點警報: 0 項\n"
                     f"• ⚙️ CI/CD 執行狀態: 全部正常 (0 失敗)\n"
-                    f"• 📌 待處理 Issue 追蹤: {issues_count} 項\n\n"
+                    f"• 📌 待處理 Issue 追蹤: {issues_count} 項\n"
+                    f"• 🤖 Hermes Agent: {summary.get('hermes_agent_version', '未偵測')}\n\n"
                     "🎉 系統運行健全，祝下週交易順利！"
                 )
                 self.hb.update_job_status(

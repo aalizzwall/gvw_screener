@@ -9,6 +9,7 @@ import aiohttp
 import requests
 
 from src.interfaces.data_provider import DataProvider
+from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds
 
 YAHOO_MIN_REQUEST_INTERVAL = 0.5
 _last_request_ts = 0.0
@@ -32,8 +33,9 @@ class YahooAdapter(DataProvider):
 
     CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None, adaptive_backoff: Optional[AdaptiveBackoff] = None):
         self.logger = logger or logging.getLogger(__name__)
+        self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
 
     @staticmethod
     def _symbols(ticker: str) -> List[str]:
@@ -65,7 +67,8 @@ class YahooAdapter(DataProvider):
                 continue
 
             if response.status_code == 429:
-                backoff = min(2 ** attempt, 30)
+                self.adaptive_backoff.trip()
+                backoff = compute_backoff_seconds(attempt)
                 self.logger.warning("Yahoo rate limited (429) for %s, backing off %ss", symbol, backoff)
                 time.sleep(backoff)
                 attempt += 1
@@ -129,6 +132,7 @@ class YahooAdapter(DataProvider):
                     price[field] = self._number(values[index]) if index < len(values) else 0
                 prices.append(price)
             if prices:
+                self.adaptive_backoff.reset()
                 return sorted(prices, key=lambda item: item["date"])
 
         if not_found_count == len(self._symbols(ticker)):

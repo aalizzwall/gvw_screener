@@ -7,6 +7,7 @@ import random
 from datetime import datetime
 from typing import Dict, Any, List, Optional, AsyncIterable, Union
 from src.interfaces.data_provider import DataProvider
+from src.providers.resilience import AdaptiveBackoff
 
 class TWSEAdapter(DataProvider):
     """
@@ -32,8 +33,9 @@ class TWSEAdapter(DataProvider):
 
     BASE_URL = "https://openapi.twse.com.tw/v1"
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None, adaptive_backoff: Optional[AdaptiveBackoff] = None):
         self.logger = logger or logging.getLogger(__name__)
+        self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
         self._valuation_cache = None
         self._valuation_cache_time = 0.0
         if not self.logger.handlers:
@@ -65,6 +67,7 @@ class TWSEAdapter(DataProvider):
                 self.logger.warning("Empty or invalid response for TWSE dataset %s", dataset_key)
                 return None
             elif response.status_code == 429:
+                self.adaptive_backoff.trip()
                 self.logger.warning("Rate limited (429).")
                 return None
             else:

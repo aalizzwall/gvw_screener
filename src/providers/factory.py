@@ -6,6 +6,7 @@ from src.providers.twse_adapter import TWSEAdapter
 from src.providers.finmind_adapter import FinMindAdapter
 from src.providers.yahoo_adapter import TickerNotFoundError, YahooAdapter
 from src.providers.valuation_service import ValuationService, get_valuation_service
+from src.providers.resilience import AdaptiveBackoff
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,12 @@ class DataProviderFactory:
         finmind_adapter: Optional[FinMindAdapter] = None,
         yahoo_adapter: Optional[YahooAdapter] = None,
         valuation_service: Optional[ValuationService] = None,
+        adaptive_backoff: Optional[AdaptiveBackoff] = None,
     ):
-        self.twse = twse_adapter or TWSEAdapter()
-        self.finmind = finmind_adapter or FinMindAdapter()
-        self.yahoo = yahoo_adapter or YahooAdapter()
+        self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
+        self.twse = twse_adapter or TWSEAdapter(adaptive_backoff=self.adaptive_backoff)
+        self.finmind = finmind_adapter or FinMindAdapter(adaptive_backoff=self.adaptive_backoff)
+        self.yahoo = yahoo_adapter or YahooAdapter(adaptive_backoff=self.adaptive_backoff)
         self.valuation_service = valuation_service or get_valuation_service()
 
     def get_valuation(self, ticker: str) -> Optional[Dict[str, Any]]:
