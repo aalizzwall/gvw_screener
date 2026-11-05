@@ -13,8 +13,11 @@ import requests
 from src.config import DATA_DIR, LOGS_DIR
 from src.state.ai_provider import AIProviderPreferenceStore
 from src.analysis.ai_analyst import check_providers
+from gvw_bot.heartbeat import HeartbeatManager
 
 logger = logging.getLogger("gvw.doctor")
+
+_DEFAULT_HEARTBEAT_MANAGER = HeartbeatManager()
 
 
 class GVWDoctor:
@@ -28,10 +31,12 @@ class GVWDoctor:
         data_dir: str = DATA_DIR,
         logs_dir: str = LOGS_DIR,
         ai_provider_store: Optional[AIProviderPreferenceStore] = None,
+        heartbeat_file: Optional[str] = None,
     ):
         self.data_dir = data_dir
         self.logs_dir = logs_dir
         self.ai_provider_store = ai_provider_store or AIProviderPreferenceStore()
+        self.heartbeat_file = heartbeat_file or _DEFAULT_HEARTBEAT_MANAGER.heartbeat_file
 
     # ---------------------------------------------------------
     # 1. System & Hardware Metrics
@@ -113,14 +118,14 @@ class GVWDoctor:
     # ---------------------------------------------------------
     def get_heartbeat_status(self) -> Dict[str, Any]:
         """Checks heartbeat file freshness and service state."""
-        hb_path = os.path.join(self.data_dir, "heartbeat.json")
+        hb_path = self.heartbeat_file
         if not os.path.exists(hb_path):
             return {"exists": False, "status": "unknown", "fresh": False, "age_seconds": None}
 
         try:
             with open(hb_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            ts = data.get("timestamp")
+            ts = data.get("last_heartbeat")
             status = data.get("status", "unknown")
             age = None
             fresh = False

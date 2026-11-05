@@ -33,6 +33,10 @@ class TestAIAnalyst(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        from src.providers.resilience import get_global_adaptive_backoff
+
+        self.global_breaker = get_global_adaptive_backoff()
+        self.global_breaker.reset()
         self.state = StateManager(
             data_dir=f"{self.temp_dir.name}/data",
             health_file=f"{self.temp_dir.name}/health.json",
@@ -66,6 +70,7 @@ class TestAIAnalyst(unittest.TestCase):
 
     def tearDown(self):
         _PROBE_CACHE.clear()
+        self.global_breaker.reset()
         self.temp_dir.cleanup()
 
     def test_analysis_uses_saved_taiwan_stock_data_and_returns_model_report(self):
@@ -170,6 +175,55 @@ class TestAIAnalyst(unittest.TestCase):
             f"{status_code} error", response=response
         )
         return response
+
+    def test_analysis_trips_global_rate_limit_breaker_on_429(self):
+        from src.providers.resilience import AdaptiveBackoff
+
+        responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
+        breaker = AdaptiveBackoff()
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key", adaptive_backoff=breaker)
+
+        self.assertEqual(report, "Gemma 分析結果")
+        self.assertTrue(breaker.is_on_cooldown())
+
+    def test_analysis_trips_shared_global_rate_limit_breaker_on_429(self):
+        from src.providers.resilience import get_global_adaptive_backoff
+
+        responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
+        breaker = get_global_adaptive_backoff()
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key")
+
+        self.assertEqual(report, "Gemma 分析結果")
+        self.assertTrue(breaker.is_on_cooldown())
+
+    def test_analysis_consumes_jittered_exponential_backoff_on_429(self):
+        from src.providers.resilience import AdaptiveBackoff
+
+        responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
+        breaker = AdaptiveBackoff()
+        sleeps = []
+
+        with (
+            patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),
+            patch("src.analysis.ai_analyst.requests.post", side_effect=responses) as post,
+            patch("src.analysis.ai_analyst.time.sleep", side_effect=sleeps.append),
+        ):
+            report = analyze_stock("2330", self.state, api_key="test-key", adaptive_backoff=breaker)
+
+        self.assertEqual(report, "Gemma 分析結果")
+        self.assertTrue(sleeps)
+        self.assertTrue(1.0 <= sleeps[0] < 1.5, f"expected jittered exponential backoff, got {sleeps}")
+        self.assertTrue(breaker.is_on_cooldown())
 
     def test_falls_back_to_gemma_when_openai_is_rate_limited(self):
         responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
