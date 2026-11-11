@@ -152,9 +152,10 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
         # Imported lazily: autopilot depends on the ranker, keep report generation free of import cycles.
         from src.autopilot.ledger import RecommendationLedger, format_performance_section
 
-        data_dir = getattr(state, "data_dir", None)
-        ledger_path = os.path.join(data_dir, "recommendations.json") if data_dir else None
-        lines.append(format_performance_section(RecommendationLedger(state, path=ledger_path).summary()))
+        # data_dir = getattr(state, "data_dir", None)
+        # ledger_path = os.path.join(data_dir, "recommendations.json") if data_dir else None
+        # lines.append(format_performance_section(RecommendationLedger(state, path=ledger_path).summary()))
+        pass
     except Exception as e:  # performance block is informational; never break the report
         logger.warning(f"Skipping performance section: {e}")
 
