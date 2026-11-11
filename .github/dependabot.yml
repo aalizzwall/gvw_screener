@@ -18,22 +18,6 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
-  - package-ecosystem: pip
-    directory: /src/dashboard
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 2
-    reviewers:
-      - aalizzwall
-    labels:
-      - "dependencies"
-    groups:
-      weekly-dependencies:
-        applies-to: version-updates
-        patterns:
-          - "*"
-    commit-message:
-      prefix: "chore(deps)"
 
   - package-ecosystem: github-actions
     directory: /
