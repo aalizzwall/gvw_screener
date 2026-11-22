@@ -217,8 +217,15 @@ class DataProviderFactory:
             return self.yahoo.fetch_market_index(yf_ticker)
         except Exception as e:
             logger.error(f"[FACTORY] Yahoo market index failed: {e}")
+            return {}
 
-        return {}
+    def fetch_vix(self) -> Dict[str, Any]:
+        """VIX volatility index — Yahoo only, best-effort."""
+        try:
+            return self.yahoo.fetch_market_index("^VIX")
+        except Exception as e:
+            logger.warning(f"[FACTORY] VIX fetch failed: {e}")
+            return {}
 
     def check_availability(self) -> Dict[str, bool]:
         """

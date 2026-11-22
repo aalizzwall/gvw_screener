@@ -101,8 +101,11 @@ def generate_daily_report(state_manager: Optional[IStateRepository] = None) -> s
     strong_signals = get_strong_buy_signals(state_manager=state)
     lines = [
         f"📅 <b>資料截止至</b>: <code>{data_cutoff}</code>{stale_note}\n",
-        "🚨 <b>強烈買入訊號 (K-line Verified)</b>\n"
     ]
+    vix = (state.get_market_index() or {}).get("vix")
+    if vix:
+        lines.append(f"🌍 <b>VIX 波動率</b>: <code>{vix['price']:.1f}</code>（<code>{vix.get('as_of', '未知')}</code>\n")
+    lines.append("🚨 <b>強烈買入訊號 (K-line Verified)</b>\n")
 
     if not strong_signals:
         lines.append("目前無符合 K 線突破之標的，請耐心等待\n")

@@ -30,10 +30,11 @@ def _rate_limit_chart():
 
 
 class FakeState:
-    def __init__(self, stock_data=None, ranks=None, universe=None):
+    def __init__(self, stock_data=None, ranks=None, universe=None, market_index=None):
         self.stock_data = dict(stock_data or {})
         self.ranks = dict(ranks or {})
         self.universe = dict(universe or {})
+        self.market_index = dict(market_index or {})
         self.health = {}
 
     def get_universe(self):
@@ -57,6 +58,12 @@ class FakeState:
     def get_ranks(self):
         return self.ranks
 
+    def get_market_index(self):
+        return self.market_index
+
+    def save_market_index(self, index_data):
+        self.market_index = dict(index_data)
+
 
 class FakeFactory:
     def __init__(self, stock_data, prices):
@@ -77,6 +84,9 @@ class FakeFactory:
         return self.prices
 
     def fetch_market_index(self, index_ticker="TWII"):
+        return {}
+
+    def fetch_vix(self):
         return {}
 
 
@@ -514,6 +524,18 @@ class ProviderResilienceTests(unittest.TestCase):
             report = generate_daily_report(state_manager=state)
 
         self.assertIn("資料截止至</b>: <code>未知</code>", report)
+
+    def test_report_includes_vix_only_when_available(self):
+        from src.reporting.report_engine import generate_daily_report
+
+        ranks = {"data": [{"ticker": "2330", "price_data_as_of": "2026-10-16", "entry_signal": "none"}]}
+        with patch("src.reporting.report_engine.get_strong_buy_signals", return_value=[]):
+            with_vix = generate_daily_report(state_manager=FakeState(
+                ranks=ranks, market_index={"vix": {"price": 18.4, "as_of": "2026-10-16"}}))
+            without_vix = generate_daily_report(state_manager=FakeState(ranks=ranks))
+
+        self.assertIn("VIX 波動率</b>: <code>18.4</code>", with_vix)
+        self.assertNotIn("VIX", without_vix)
 
     def test_report_limits_each_candidate_section_to_ten_stocks(self):
         from src.reporting.report_engine import generate_daily_report
