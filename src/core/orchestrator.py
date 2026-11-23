@@ -68,17 +68,22 @@ class Orchestrator:
         Fetches latest market index statistics and price history.
         """
         logger.info("Updating market index...")
+        existing = self.state.get_market_index()
         market_stats = self.factory.fetch_market_index("TWII")
         if market_stats:
-            existing = self.state.get_market_index()
             existing.update({
                 "updated_at": datetime.now().isoformat(),
                 "stats": market_stats
             })
-            self.state.save_market_index(existing)
             logger.info("✅ Market index stats updated.")
         else:
             logger.warning("⚠️ Market index stats update returned empty.")
+
+        vix = self.factory.fetch_vix()
+        if vix.get("price"):
+            existing["vix"] = {"price": vix["price"], "as_of": vix.get("updated_at")}
+            logger.info(f"✅ VIX updated: {vix['price']}")
+        self.state.save_market_index(existing)
 
     def ensure_universe(self) -> Dict[str, str]:
         universe = self.state.get_universe()
