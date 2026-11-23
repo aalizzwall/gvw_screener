@@ -537,6 +537,28 @@ class ProviderResilienceTests(unittest.TestCase):
         self.assertIn("VIX 波動率</b>: <code>18.4</code>", with_vix)
         self.assertNotIn("VIX", without_vix)
 
+    def test_yahoo_fetch_sends_browser_user_agent(self):
+        # Yahoo 429s the default python-requests UA; VIX fetch died silently.
+        import requests
+        from src.providers.yahoo_adapter import YahooAdapter
+
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured.update(kwargs)
+            class Resp:
+                status_code = 404
+                def json(self):
+                    return {}
+            return Resp()
+
+        with patch.object(requests, "get", fake_get):
+            try:
+                YahooAdapter().fetch_price_history("2330", days=1)
+            except Exception:
+                pass  # fake 404 -> TickerNotFoundError; we only care about the headers
+        self.assertIn("Mozilla", captured["headers"]["User-Agent"])
+
     def test_report_limits_each_candidate_section_to_ten_stocks(self):
         from src.reporting.report_engine import generate_daily_report
 

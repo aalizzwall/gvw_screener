@@ -60,6 +60,7 @@ class YahooAdapter(DataProvider):
                 response = requests.get(
                     self.CHART_URL.format(symbol=symbol),
                     params={"range": f"{max(days, 1)}d", "interval": "1d"},
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; GVWBot/1.0)"},
                     timeout=20,
                 )
             except requests.RequestException as exc:
