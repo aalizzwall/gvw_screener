@@ -117,6 +117,7 @@ POINTER_FILE = os.environ.get("GVW_POINTER_FILE", os.path.join(BASE_DIR, "pointe
 RESULT_FILE = os.environ.get("GVW_RESULT_FILE", os.path.join(BASE_DIR, "all_rank.json"))
 HEALTH_STATUS_FILE = os.environ.get("GVW_HEALTH_FILE", os.path.join(BASE_DIR, "health_status.json"))
 MARKET_INDEX_FILE = os.environ.get("GVW_MARKET_INDEX_FILE", os.path.join(BASE_DIR, "market_index.json"))
+VIX_FILE = os.environ.get("GVW_VIX_FILE", os.path.join(DATA_DIR, "vix.json"))
 SIGNAL_CACHE_FILE = os.environ.get("GVW_SIGNAL_CACHE_FILE", os.path.join(BASE_DIR, "last_signals.json"))
 
 # Logs directory
