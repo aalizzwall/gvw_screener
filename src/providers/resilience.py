@@ -69,9 +69,5 @@ class AdaptiveBackoff:
         return effective_base
 
 
+# Shared global AI rate-limit circuit breaker (tripped by all AI analyses).
 GLOBAL_ADAPTIVE_BACKOFF = AdaptiveBackoff()
-
-
-def get_global_adaptive_backoff() -> AdaptiveBackoff:
-    """Shared global AI rate-limit circuit breaker (tripped by all AI analyses)."""
-    return GLOBAL_ADAPTIVE_BACKOFF

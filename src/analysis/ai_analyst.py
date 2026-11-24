@@ -13,10 +13,9 @@ from src.config import (
     OPENAI_API_KEY,
 )
 from src.state.ai_provider import AIProviderPreferenceStore, parse_entry
-from src.state.interfaces import IStateRepository
 from src.state.state_manager import StateManager
 from src.analysis.model_prober import probe_available_models, get_intra_provider_pool
-from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds, get_global_adaptive_backoff
+from src.providers.resilience import AdaptiveBackoff, compute_backoff_seconds, GLOBAL_ADAPTIVE_BACKOFF
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +211,7 @@ def _get_peer_comparison(
     ticker: str,
     industry: str,
     basic_info: Dict[str, Any],
-    state: IStateRepository,
+    state: StateManager,
 ) -> Dict[str, Any]:
     """
     Enrich prompt context with peer averages (PE, PB, Yield, GVW score) and relative position.
@@ -292,7 +291,7 @@ def _get_peer_comparison(
     }
 
 
-def _get_macro_context(state: IStateRepository) -> Dict[str, Any]:
+def _get_macro_context(state: StateManager) -> Dict[str, Any]:
     """
     Extract benchmark market index and overall economic context.
     """
@@ -312,7 +311,7 @@ def _get_macro_context(state: IStateRepository) -> Dict[str, Any]:
     }
 
 
-def _stock_snapshot(ticker: str, state: IStateRepository) -> Dict[str, Any]:
+def _stock_snapshot(ticker: str, state: StateManager) -> Dict[str, Any]:
     stock = state.get_stock_data(ticker)
     if not stock:
         raise ValueError(f"{ticker} 尚無已採集資料，請先執行資料採集。")
@@ -663,7 +662,7 @@ def _log_failure(label: str, ticker: str, key: str, exc: Exception) -> None:
 
 def analyze_stock(
     ticker: str,
-    state_manager: Optional[IStateRepository] = None,
+    state_manager: Optional[StateManager] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     chain: Optional[List[str]] = None,
@@ -675,7 +674,7 @@ def analyze_stock(
     invalid response, ...) the next entry with a configured key is tried. This function
     never places orders. ``api_key``/``model`` override the OpenAI entries only.
     """
-    breaker = adaptive_backoff or get_global_adaptive_backoff()
+    breaker = adaptive_backoff or GLOBAL_ADAPTIVE_BACKOFF
     if not ticker.isdigit() or not 4 <= len(ticker) <= 6:
         raise ValueError("請輸入 4 至 6 位數的台股代碼。")
 

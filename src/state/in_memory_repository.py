@@ -1,9 +1,8 @@
 from typing import Dict, Any, List
-from src.state.interfaces import IStateRepository
 
-class InMemoryStateRepository(IStateRepository):
+class InMemoryStateRepository:
     """
-    In-memory implementation of IStateRepository for testing purposes.
+    In-memory state repository for testing purposes.
     """
     def __init__(self):
         self._stock_data: Dict[str, Dict[str, Any]] = {}
