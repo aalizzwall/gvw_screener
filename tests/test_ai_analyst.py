@@ -33,9 +33,9 @@ class TestAIAnalyst(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-        from src.providers.resilience import get_global_adaptive_backoff
+        from src.providers.resilience import GLOBAL_ADAPTIVE_BACKOFF
 
-        self.global_breaker = get_global_adaptive_backoff()
+        self.global_breaker = GLOBAL_ADAPTIVE_BACKOFF
         self.global_breaker.reset()
         self.state = StateManager(
             data_dir=f"{self.temp_dir.name}/data",
@@ -192,10 +192,10 @@ class TestAIAnalyst(unittest.TestCase):
         self.assertTrue(breaker.is_on_cooldown())
 
     def test_analysis_trips_shared_global_rate_limit_breaker_on_429(self):
-        from src.providers.resilience import get_global_adaptive_backoff
+        from src.providers.resilience import GLOBAL_ADAPTIVE_BACKOFF
 
         responses = [self._http_error(429), self._ok_response("Gemma 分析結果")]
-        breaker = get_global_adaptive_backoff()
+        breaker = GLOBAL_ADAPTIVE_BACKOFF
 
         with (
             patch("src.analysis.ai_analyst.GEMINI_API_KEY", "gem-key"),

@@ -2,7 +2,6 @@ import os
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from src.state.interfaces import IStateRepository
 from src.config import (
     DATA_DIR,
     HEALTH_STATUS_FILE,
@@ -13,9 +12,9 @@ from src.config import (
 
 logger = logging.getLogger(__name__)
 
-class StateManager(IStateRepository):
+class StateManager:
     """
-    FileSystem implementation of IStateRepository.
+    FileSystem state repository.
     Manages application state, including stock data persistence,
     universe mapping, health tracking, and rankings.
     """
