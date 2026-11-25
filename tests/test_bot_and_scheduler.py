@@ -761,14 +761,14 @@ class TestBotAndScheduler(unittest.TestCase):
         self.assertIn("intraday_monitor", job_names)
         self.assertIn("daily_collection", job_names)
         self.assertIn("daily_ranking", job_names)
-        self.assertIn("daily_report", job_names)
         self.assertIn("morning_briefing", job_names)
+        self.assertNotIn("daily_report", job_names)
 
         daily_collection = next(job for job in scheduler.jobs if job.name == "daily_collection")
         self.assertEqual(daily_collection.grace_minutes, 45)
 
-        daily_report = next(job for job in scheduler.jobs if job.name == "daily_report")
-        self.assertEqual(daily_report.grace_minutes, 60)
+        morning_briefing = next(job for job in scheduler.jobs if job.name == "morning_briefing")
+        self.assertEqual(morning_briefing.daily_time, "08:30")
 
         periodic_sync = next(job for job in scheduler.jobs if job.name == "periodic_sync")
         self.assertEqual(periodic_sync.interval_minutes, 60)
@@ -931,7 +931,7 @@ class TestBotAndScheduler(unittest.TestCase):
         bot.send_message.assert_called()
         self.assertIn("專案健康狀態優良", bot.send_message.call_args[0][1])
 
-    def test_daily_report_broadcasts_to_subscribers_when_available(self):
+    def test_morning_briefing_broadcasts_to_subscribers_when_available(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = AlertSubscriptionStore(f"{temp_dir}/alerts.json")
             store.subscribe("100")
@@ -942,7 +942,7 @@ class TestBotAndScheduler(unittest.TestCase):
                 patch("gvw_bot.scheduler.generate_daily_report", return_value="Daily Report Text"),
                 patch("gvw_bot.scheduler.send_telegram_message", return_value=True) as mock_send,
             ):
-                scheduler.job_daily_report()
+                scheduler.job_morning_briefing()
 
             calls = mock_send.call_args_list
             sub_targets = {str(c.kwargs.get("chat_id")) for c in calls if c.kwargs.get("chat_id") is not None}

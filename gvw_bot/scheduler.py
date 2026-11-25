@@ -140,16 +140,7 @@ class GVWScheduler:
             grace_minutes=30
         ))
 
-        # 4. Daily Post-Market Report: Weekdays at 15:30
-        self.jobs.append(ScheduledJob(
-            name="daily_report",
-            func=self.job_daily_report,
-            daily_time="15:30",
-            weekdays_only=True,
-            grace_minutes=60
-        ))
-
-        # 5. Daily Pre-Market Morning Summary: Weekdays at 08:30
+        # 4. Daily Pre-Market Morning Summary: Weekdays at 08:30
         self.jobs.append(ScheduledJob(
             name="morning_briefing",
             func=self.job_morning_briefing,
@@ -158,7 +149,7 @@ class GVWScheduler:
             grace_minutes=30
         ))
 
-        # 6. Periodic Oldest-First Sync: Every 60 minutes (always running)
+        # 5. Periodic Oldest-First Sync: Every 60 minutes (always running)
         # Initialize last_run to now so it does not hog resources immediately upon boot
         periodic_sync = ScheduledJob(
             name="periodic_sync",
@@ -169,7 +160,7 @@ class GVWScheduler:
         periodic_sync.last_run = datetime.now()
         self.jobs.append(periodic_sync)
 
-        # 7. Weekly GitHub & System Audit: Every Sunday at 20:00
+        # 6. Weekly GitHub & System Audit: Every Sunday at 20:00
         self.jobs.append(ScheduledJob(
             name="weekly_github_audit",
             func=self.job_weekly_github_audit,
@@ -179,7 +170,7 @@ class GVWScheduler:
             grace_minutes=60,
         ))
 
-        # 8. Autopilot: pre-market data freshening (before 08:30 briefing)
+        # 7. Autopilot: pre-market data freshening (before 08:30 briefing)
         self.jobs.append(ScheduledJob(
             name="premarket_data_check",
             func=self.job_premarket_data_check,
@@ -188,7 +179,7 @@ class GVWScheduler:
             grace_minutes=50,
         ))
 
-        # 9. Autopilot: lightweight guard, pre-open through close (no VACUUM during market)
+        # 8. Autopilot: lightweight guard, pre-open through close (no VACUUM during market)
         self.jobs.append(ScheduledJob(
             name="autopilot_guard",
             func=self.job_autopilot_guard,
@@ -197,7 +188,7 @@ class GVWScheduler:
             active_hours=(7.0, 13.6),
         ))
 
-        # 10. Autopilot: post-market backtest review + daily digest (after report at 15:30)
+        # 9. Autopilot: post-market backtest review + daily digest (after ranking at 15:00)
         self.jobs.append(ScheduledJob(
             name="postmarket_review",
             func=self.job_postmarket_review,
@@ -206,7 +197,7 @@ class GVWScheduler:
             grace_minutes=120,
         ))
 
-        # 11. Autopilot: nightly heavy maintenance (log rotation, VACUUM), every day
+        # 10. Autopilot: nightly heavy maintenance (log rotation, VACUUM), every day
         self.jobs.append(ScheduledJob(
             name="nightly_maintenance",
             func=self.job_nightly_maintenance,
@@ -215,7 +206,7 @@ class GVWScheduler:
             grace_minutes=60,
         ))
 
-        # 12. Portfolio watchlist: target/stop-loss checks every 30 min during market hours
+        # 11. Portfolio watchlist: target/stop-loss checks every 30 min during market hours
         self.jobs.append(ScheduledJob(
             name="portfolio_check",
             func=self.job_portfolio_check,
@@ -279,18 +270,6 @@ class GVWScheduler:
         result = run_ranking()
         count = len(result.get("data", []))
         self.hb.update_job_status("daily_ranking", "ok", message=f"Ranked {count} stocks")
-
-    def job_daily_report(self) -> None:
-        logger.info("[JOB] Generating and sending Post-Market Daily Report...")
-        report_text = generate_daily_report()
-        sent = False
-        if TELEGRAM_HOME_CHANNEL:
-            if send_telegram_message(report_text, chat_id=TELEGRAM_HOME_CHANNEL):
-                sent = True
-        for chat_id in self.alert_store.get_subscribers():
-            if send_telegram_message(report_text, chat_id=chat_id):
-                sent = True
-        self.hb.update_job_status("daily_report", "ok" if sent else "warning", message="Sent to Telegram" if sent else "Failed/Not configured")
 
     def job_morning_briefing(self) -> None:
         logger.info("[JOB] Generating Pre-Market Morning Briefing...")
