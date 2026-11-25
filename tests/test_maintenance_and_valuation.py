@@ -333,9 +333,10 @@ class TestMaintenanceAgent(unittest.TestCase):
     def test_tool_registry_registration_and_execution(self):
         registry = ToolRegistry()
 
-        @registry.register(name="add", description="加法運算")
         def add(a: int, b: int) -> int:
             return a + b
+
+        registry.register_tool(name="add", description="加法運算", handler=add)
 
         self.assertIsNotNone(registry.get("add"))
         self.assertEqual(registry.execute("add", {"a": 2, "b": 3}), 5)
