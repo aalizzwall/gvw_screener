@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import numpy as np
 from src.core.orchestrator import Orchestrator
+from src.core.scoring_strategy import calculate_quality_score
 from src.analysis.intraday import run_intraday_monitoring
 from src.analysis.ranker import (
     calculate_momentum_score,
@@ -18,10 +19,9 @@ from src.cli import build_arg_parser
 class TestAnalysisAndCore(unittest.TestCase):
 
     def test_calculate_quality_score(self):
-        orchestrator = Orchestrator()
         pl = {'revenue': 1000000, 'net_income': 200000}
         bs = {'total_assets': 2000000, 'total_liabilities': 500000}
-        score = orchestrator.calculate_quality_score(pl, bs)
+        score = calculate_quality_score(pl, bs)
         self.assertGreater(score, 0.0)
         self.assertLessEqual(score, 1.0)
 

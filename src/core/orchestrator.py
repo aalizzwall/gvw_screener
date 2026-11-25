@@ -6,7 +6,7 @@ from src.state.state_manager import StateManager
 from src.providers.factory import DataProviderFactory
 from src.providers.yahoo_adapter import TickerNotFoundError
 from src.providers.resilience import AdaptiveBackoff, MIN_BATCH_RATIO
-from src.core.scoring_strategy import ScoringStrategy, DefaultScoringStrategy
+from src.core.scoring_strategy import calculate_quality_score
 from src.config import (
     TTL_HIGH_SCORE,
     TTL_MID_SCORE,
@@ -27,19 +27,11 @@ class Orchestrator:
         self,
         state_manager: Optional[StateManager] = None,
         provider_factory: Optional[DataProviderFactory] = None,
-        scoring_strategy: Optional[ScoringStrategy] = None,
         adaptive_backoff: Optional[AdaptiveBackoff] = None
     ):
         self.state: StateManager = state_manager or StateManager()
         self.adaptive_backoff = adaptive_backoff or AdaptiveBackoff()
         self.factory = provider_factory or DataProviderFactory(adaptive_backoff=self.adaptive_backoff)
-        self.scoring_strategy = scoring_strategy or DefaultScoringStrategy()
-
-    def calculate_quality_score(self, pl_data: Dict[str, Any], bs_data: Dict[str, Any]) -> float:
-        """
-        Delegates quality score calculation to the configured strategy.
-        """
-        return self.scoring_strategy.calculate_score(pl_data, bs_data)
 
     @staticmethod
     def _apply_price_history(data: Dict[str, Any], prices: List[Dict[str, Any]]) -> None:
@@ -200,7 +192,7 @@ class Orchestrator:
         if financials_updated:
             pl = existing_data.get('financials', {}).get('income_statement', {})
             bs = existing_data.get('financials', {}).get('balance_sheet', {})
-            existing_data['score'] = self.calculate_quality_score(pl, bs)
+            existing_data['score'] = calculate_quality_score(pl, bs)
 
         if financials_ok and prices_ok:
             existing_data['updated_at'] = now
