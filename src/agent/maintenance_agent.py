@@ -1,9 +1,7 @@
 import os
-import glob
 import json
 import re
 import shutil
-import sqlite3
 import subprocess
 import logging
 from typing import Dict, Any, List, Optional, Set
@@ -57,7 +55,6 @@ class MaintenanceAgent:
         )
         self.scheduler = scheduler
         self.logs_dir = logs_dir
-        self.data_dir = data_dir
 
         self.sessions: Dict[str, SessionContext] = {}
         self.shell = ShellToolkit(cwd=PROJECT_ROOT)
@@ -82,12 +79,6 @@ class MaintenanceAgent:
                 "keyword": {"type": "string", "description": "搜尋關鍵字，可為空", "required": False, "default": ""},
                 "max_lines": {"type": "integer", "description": "回傳最多行數", "required": False, "default": 30},
             },
-        )
-        self.registry.register_tool(
-            name="inspect_db_schema",
-            description="查看 SQLite 資料庫表結構與記錄筆數。",
-            handler=self.tool_inspect_db_schema,
-            parameters={},
         )
         self.registry.register_tool(
             name="get_provider_endpoints",
@@ -252,30 +243,6 @@ class MaintenanceAgent:
             return "\n".join(selected)
         except Exception as e:
             return f"讀取日誌失敗：{e}"
-
-    def tool_inspect_db_schema(self) -> Dict[str, Any]:
-        """Inspects SQLite database schema and row counts."""
-        db_files = glob.glob(os.path.join(self.data_dir, "*.db"))
-        overview = {}
-        for db in db_files:
-            name = os.path.basename(db)
-            try:
-                conn = sqlite3.connect(db, timeout=5)
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                tables = [row[0] for row in cursor.fetchall() if not row[0].startswith("sqlite_")]
-                table_info = {}
-                for t in tables:
-                    cursor.execute(f"SELECT COUNT(*) FROM {t};")
-                    count = cursor.fetchone()[0]
-                    cursor.execute(f"PRAGMA table_info({t});")
-                    cols = [col[1] for col in cursor.fetchall()]
-                    table_info[t] = {"row_count": count, "columns": cols}
-                conn.close()
-                overview[name] = table_info
-            except Exception as e:
-                overview[name] = {"error": str(e)}
-        return overview
 
     def tool_get_provider_endpoints(self) -> Dict[str, Any]:
         """Returns API endpoints and field mappings for active data providers."""

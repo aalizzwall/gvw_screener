@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import sqlite3
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, MagicMock
@@ -68,17 +67,6 @@ class TestMaintenanceAgent(unittest.TestCase):
         res = self.agent.tool_search_logs(keyword="TWSE", max_lines=5)
         self.assertIn("TWSE endpoint timeout", res)
         self.assertNotIn("Finished ranking", res)
-
-    def test_tool_inspect_db_schema(self):
-        db_path = os.path.join(self.data_dir, "test_gvw.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE stocks (id INT, ticker TEXT);")
-        conn.commit()
-        conn.close()
-
-        schema = self.agent.tool_inspect_db_schema()
-        self.assertIn("test_gvw.db", schema)
-        self.assertIn("stocks", schema["test_gvw.db"])
 
     def test_tool_get_provider_endpoints(self):
         endpoints = self.agent.tool_get_provider_endpoints()

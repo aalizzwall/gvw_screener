@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import sqlite3
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -70,18 +69,6 @@ class TestGVWDoctor(unittest.TestCase):
             # alongside the writer-aligned heartbeat fields.
             self.assertIn("last_run", hb)
 
-    def test_get_database_status(self):
-        db_path = os.path.join(self.data_dir, "test.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE test (id INT);")
-        conn.commit()
-        conn.close()
-
-        status = self.doctor.get_database_status()
-        self.assertTrue(status["all_ok"])
-        self.assertIn("test.db", status["databases"])
-        self.assertTrue(status["databases"]["test.db"]["ok"])
-
     def test_format_diagnostics_report(self):
         mock_diag = {
             "timestamp": "2026-10-21T21:00:00",
@@ -90,7 +77,6 @@ class TestGVWDoctor(unittest.TestCase):
             "cpu_temp": 48.2,
             "heartbeat": {"exists": True, "status": "running", "fresh": True, "age_seconds": 15},
             "systemd": "active",
-            "database": {"all_ok": True, "databases": {}, "total_size_mb": 4.5},
             "connectivity": {
                 "telegram": {"ok": True, "latency_ms": 110},
                 "twse": {"ok": True, "latency_ms": 190},
@@ -101,7 +87,6 @@ class TestGVWDoctor(unittest.TestCase):
         self.assertIn("GVW 系統全方位健康診斷報告", report)
         self.assertIn("48.2°C", report)
         self.assertIn("openai/gpt-4o-mini", report)
-        self.assertIn("PRAGMA OK", report)
 
     def test_run_remediation_actions(self):
         # 1. Create a large log file
