@@ -19,7 +19,8 @@ from src.reporting.report_engine import generate_daily_report
 from src.reporting.telegram_notifier import send_telegram_message
 from src.state.alert_subscribers import AlertSubscriptionStore
 from src.state.portfolio_store import PortfolioStore
-from src.analysis.portfolio_monitor import check_portfolio
+from src.analysis.portfolio_monitor import check_portfolio, check_dividend_alerts
+from src.providers.yahoo_adapter import YahooAdapter
 from src.config import TELEGRAM_HOME_CHANNEL
 from src.autopilot.pilot import AutoPilot
 from src.diagnostics.doctor import GVWDoctor
@@ -101,6 +102,7 @@ class GVWScheduler:
         self.orchestrator = Orchestrator()
         self.alert_store = alert_store or AlertSubscriptionStore()
         self.portfolio_store = portfolio_store or PortfolioStore()
+        self.yahoo_dividends = YahooAdapter(logger=logger)
         self.autopilot = AutoPilot(
             state=StateManager(),
             doctor=GVWDoctor(),
@@ -254,8 +256,9 @@ class GVWScheduler:
         self.hb.update_job_status("intraday_monitor", "ok", message=f"Generated {len(alerts)} alerts")
 
     def job_portfolio_check(self) -> None:
-        logger.info("[JOB] Checking portfolio watchlist for target/stop-loss hits...")
+        logger.info("[JOB] Checking portfolio watchlist for target/stop-loss hits and upcoming ex-dividends...")
         alerts = check_portfolio(self.portfolio_store, StateManager())
+        alerts += check_dividend_alerts(self.portfolio_store, self.yahoo_dividends)
         for alert in alerts:
             send_telegram_message(alert["message"], chat_id=alert["chat_id"])
         self.hb.update_job_status("portfolio_check", "ok", message=f"Generated {len(alerts)} alerts")

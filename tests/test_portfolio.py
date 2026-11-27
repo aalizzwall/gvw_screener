@@ -1,9 +1,10 @@
 import os
 import tempfile
 import unittest
+from datetime import date, timedelta
 
 from src.state.portfolio_store import PortfolioStore
-from src.analysis.portfolio_monitor import check_portfolio
+from src.analysis.portfolio_monitor import check_portfolio, check_dividend_alerts
 from src.analysis.trade_geometry import compute_trade_plan
 
 
@@ -123,6 +124,52 @@ class PortfolioMonitorTests(unittest.TestCase):
             state_empty = FakeState({})
             self.assertEqual(check_portfolio(store, state_empty), [])
             self.assertFalse(any(store.list()["2330"]["alerted"].values()))
+
+
+class FakeYahoo:
+    def __init__(self, events):
+        self.events = events
+
+    def fetch_dividend_events(self, ticker):
+        return self.events.get(ticker, [])
+
+
+class DividendAlertTests(unittest.TestCase):
+    def test_alert_once_within_window_and_dedupe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "portfolio.json")
+            store = PortfolioStore(path)
+            store.add("0050", 100.0, "2026-11-01", 42)
+            ex_date = (date.today() + timedelta(days=3)).isoformat()
+            yahoo = FakeYahoo({"0050": [{"date": ex_date, "amount": 1.5}]})
+
+            alerts = check_dividend_alerts(store, yahoo, today=date.today())
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0]["level"], "dividend")
+            self.assertIn(ex_date, alerts[0]["message"])
+            self.assertIn("最後買進日", alerts[0]["message"])
+            self.assertEqual(alerts[0]["chat_id"], 42)
+
+            self.assertEqual(check_dividend_alerts(store, yahoo, today=date.today()), [])
+            persisted = PortfolioStore(path).list()["0050"]["alerted"]
+            self.assertTrue(persisted[f"dividend_{ex_date}"])
+
+    def test_past_and_far_future_events_ignored(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = PortfolioStore(os.path.join(temp_dir, "portfolio.json"))
+            store.add("2330", 10.0, "2026-11-01", 1)
+            yahoo = FakeYahoo({
+                "2330": [
+                    {"date": (date.today() - timedelta(days=10)).isoformat(), "amount": 7.0},
+                    {"date": (date.today() + timedelta(days=30)).isoformat(), "amount": 7.0},
+                ]
+            })
+            self.assertEqual(check_dividend_alerts(store, yahoo, today=date.today()), [])
+
+    def test_last_buy_date_skips_weekend(self):
+        from src.analysis.portfolio_monitor import _last_buy_date
+        # ex-date Monday 2026-12-14 -> last buy day Friday 2026-12-11
+        self.assertEqual(_last_buy_date(date(2026, 12, 14)), date(2026, 12, 11))
 
 
 if __name__ == "__main__":

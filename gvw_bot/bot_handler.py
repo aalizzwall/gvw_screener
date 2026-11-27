@@ -491,7 +491,10 @@ class TelegramBotHandler:
                 else:
                     levels = "尚無交易計畫（資料不足或無平台）"
                 alerted = entry.get("alerted", {})
-                status = "、".join(LEVEL_LABELS[k] for k, v in alerted.items() if v) or "尚未觸發任何目標"
+                status = "、".join(LEVEL_LABELS[k] for k, v in alerted.items() if v and k in LEVEL_LABELS)
+                if any(k.startswith("dividend_") for k, v in alerted.items() if v):
+                    status = (status + "、除息已通知") if status else "除息已通知"
+                status = status or "尚未觸發任何目標"
                 lines.append(
                     f"• <b>{html.escape(ticker)}</b> 進場 {entry['entry_price']:.2f} 元"
                     f"（{entry['entry_date']}）：{levels} — {status}"
@@ -1448,7 +1451,7 @@ class TelegramBotHandler:
         self.send_message(
             chat_id,
             f"⭐ 已加入追蹤 <b>{t}</b>（進場價 {entry_price:.2f} 元，{datetime.now().strftime('%Y-%m-%d')}），"
-            "盤中每 30 分鐘自動檢查目標/止損。",
+            "盤中每 30 分鐘自動檢查目標/止損，除息前 7 天會通知。",
         )
         return True
 
