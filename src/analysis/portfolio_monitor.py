@@ -3,7 +3,8 @@
 Pure function over the store + state manager so it is trivially unit-testable.
 """
 import logging
-from typing import Any, Dict, List
+from datetime import date, timedelta
+from typing import Any, Dict, List, Optional
 
 from src.analysis.trade_geometry import compute_trade_plan
 
@@ -47,4 +48,49 @@ def check_portfolio(store, state_manager) -> List[Dict[str, Any]]:
                     ),
                 })
         store.save()
+    return alerts
+
+
+DIVIDEND_WINDOW_DAYS = 7
+
+
+def _last_buy_date(ex_date: date) -> date:
+    """Last day a purchase still earns the dividend: previous business day before ex-date.
+    ponytail: weekends skipped only; market holidays not modelled."""
+    d = ex_date - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def check_dividend_alerts(store, yahoo, window_days: int = DIVIDEND_WINDOW_DAYS,
+                          today: Optional[date] = None) -> List[Dict[str, Any]]:
+    """Alert once per upcoming ex-dividend date (within window_days) for every watchlist ticker."""
+    alerts: List[Dict[str, Any]] = []
+    today = today or date.today()
+    horizon = today + timedelta(days=window_days)
+    for ticker, entry in store.list().items():
+        for event in yahoo.fetch_dividend_events(ticker):
+            try:
+                ex_date = date.fromisoformat(event["date"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if not (today < ex_date <= horizon):
+                continue
+            alerted = entry.get("alerted") or {}
+            key = f"dividend_{event['date']}"
+            if alerted.get(key):
+                continue
+            alerted[key] = True
+            entry["alerted"] = alerted
+            alerts.append({
+                "ticker": ticker,
+                "chat_id": entry.get("chat_id"),
+                "level": "dividend",
+                "message": (
+                    f"🎁 <b>{ticker}</b> 除息：{event['date']} 除息，配息 {event['amount']:.2f} 元/"
+                    f"股；領息最後買進日 {_last_buy_date(ex_date):%Y-%m-%d}"
+                ),
+            })
+    store.save()
     return alerts

@@ -140,6 +140,51 @@ class YahooAdapter(DataProvider):
             raise TickerNotFoundError(ticker)
         return []
 
+    def fetch_dividend_events(self, ticker: str, days: int = 400) -> List[Dict[str, Any]]:
+        """Ex-dividend events [{date, amount}] from Yahoo chart events; [] on any failure (best-effort)."""
+        for symbol in self._symbols(ticker):
+            _throttle()
+            try:
+                response = requests.get(
+                    self.CHART_URL.format(symbol=symbol),
+                    params={"range": f"{max(days, 1)}d", "interval": "1d", "events": "div"},
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; GVWBot/1.0)"},
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                self.logger.warning("Yahoo dividend events failed for %s: %s", symbol, exc)
+                continue
+            if response.status_code == 404:
+                continue
+            try:
+                response.raise_for_status()
+                result = response.json().get("chart", {}).get("result")
+            except (requests.RequestException, ValueError, AttributeError):
+                self.logger.warning("Yahoo dividend events failed for %s", symbol)
+                continue
+            if not isinstance(result, list) or not result or not isinstance(result[0], dict):
+                continue
+            offset = result[0].get("meta", {}).get("gmtoffset", 0) if isinstance(result[0].get("meta"), dict) else 0
+            try:
+                exchange_tz = timezone(timedelta(seconds=int(offset)))
+            except (TypeError, ValueError, OverflowError):
+                exchange_tz = timezone.utc
+            events = []
+            dividends = (result[0].get("events") or {}).get("dividends") or {}
+            for event in dividends.values():
+                amount = self._number(event.get("amount"))
+                timestamp = event.get("date")
+                if amount <= 0 or timestamp is None:
+                    continue
+                try:
+                    date = datetime.fromtimestamp(timestamp, exchange_tz).strftime("%Y-%m-%d")
+                except (OverflowError, OSError, TypeError, ValueError):
+                    continue
+                events.append({"date": date, "amount": amount})
+            if events:
+                return sorted(events, key=lambda item: item["date"])
+        return []
+
     def fetch_stock_data(self, ticker: str) -> Dict[str, Any]:
         import yfinance as yf
 
