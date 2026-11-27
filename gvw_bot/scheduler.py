@@ -20,6 +20,7 @@ from src.reporting.telegram_notifier import send_telegram_message
 from src.state.alert_subscribers import AlertSubscriptionStore
 from src.state.portfolio_store import PortfolioStore
 from src.analysis.portfolio_monitor import check_portfolio, check_dividend_alerts
+from src.analysis.ipo_monitor import fetch_ipo_alerts
 from src.providers.yahoo_adapter import YahooAdapter
 from src.config import TELEGRAM_HOME_CHANNEL
 from src.autopilot.pilot import AutoPilot
@@ -217,6 +218,15 @@ class GVWScheduler:
             active_hours=(9.5, 14.5),
         ))
 
+        # 12. New IPO 公開申购 announcements: broadcast once per case to the home channel
+        self.jobs.append(ScheduledJob(
+            name="ipo_check",
+            func=self.job_ipo_check,
+            daily_time="10:00",
+            weekdays_only=True,
+            grace_minutes=90,
+        ))
+
     # --- Job Implementations ---
 
     def job_premarket_data_check(self) -> None:
@@ -262,6 +272,13 @@ class GVWScheduler:
         for alert in alerts:
             send_telegram_message(alert["message"], chat_id=alert["chat_id"])
         self.hb.update_job_status("portfolio_check", "ok", message=f"Generated {len(alerts)} alerts")
+
+    def job_ipo_check(self) -> None:
+        logger.info("[JOB] Checking TWSE IPO (新股申购) announcements...")
+        alerts = fetch_ipo_alerts()
+        for alert in alerts:
+            send_telegram_message(alert["message"], chat_id=TELEGRAM_HOME_CHANNEL)
+        self.hb.update_job_status("ipo_check", "ok", message=f"{len(alerts)} new IPO alerts")
 
     def job_daily_collection(self) -> None:
         logger.info("[JOB] Running Daily Post-Market Collection...")
