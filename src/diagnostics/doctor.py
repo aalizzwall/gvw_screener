@@ -3,7 +3,6 @@ import glob
 import json
 import time
 import shutil
-import sqlite3
 import logging
 import subprocess
 from datetime import datetime
@@ -159,40 +158,6 @@ class GVWDoctor:
             return "n/a"
 
     # ---------------------------------------------------------
-    # 3. Database Integrity Diagnostics
-    # ---------------------------------------------------------
-    def get_database_status(self) -> Dict[str, Any]:
-        """Inspects SQLite databases for integrity and file sizes."""
-        db_files = glob.glob(os.path.join(self.data_dir, "*.db"))
-        results = {}
-        all_ok = True
-        total_bytes = 0
-
-        for db in db_files:
-            name = os.path.basename(db)
-            size = os.path.getsize(db)
-            total_bytes += size
-            try:
-                conn = sqlite3.connect(db, timeout=5)
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA integrity_check;")
-                check_result = cursor.fetchone()[0]
-                conn.close()
-                is_ok = (check_result.lower() == "ok")
-                if not is_ok:
-                    all_ok = False
-                results[name] = {"integrity": check_result, "ok": is_ok, "size_mb": round(size / (1024 * 1024), 2)}
-            except Exception as e:
-                all_ok = False
-                results[name] = {"integrity": str(e), "ok": False, "size_mb": round(size / (1024 * 1024), 2)}
-
-        return {
-            "all_ok": all_ok,
-            "databases": results,
-            "total_size_mb": round(total_bytes / (1024 * 1024), 2),
-        }
-
-    # ---------------------------------------------------------
     # 4. External Connectivity Diagnostics
     # ---------------------------------------------------------
     def check_external_connectivity(self) -> Dict[str, Any]:
@@ -247,7 +212,6 @@ class GVWDoctor:
             "cpu_temp": self.get_cpu_temperature(),
             "heartbeat": self.get_heartbeat_status(),
             "systemd": self.get_systemd_status(),
-            "database": self.get_database_status(),
             "connectivity": self.check_external_connectivity(),
         }
 
@@ -260,7 +224,6 @@ class GVWDoctor:
         cpu_temp = d["cpu_temp"]
         hb = d["heartbeat"]
         sysd = d["systemd"]
-        db = d["database"]
         conn = d["connectivity"]
 
         # CPU Temp display
@@ -293,10 +256,6 @@ class GVWDoctor:
         ai_ok = ai.get("primary_ok", False)
         ai_str = f"<code>{ai_pri}</code> ({'可用 ✅' if ai_ok else '異常 ❌'})"
 
-        # DB status
-        db_tag = "✅ PRAGMA OK" if db.get("all_ok", True) else "❌ 發現損毀"
-        db_size = db.get("total_size_mb", 0)
-
         lines = [
             "🩺 <b>GVW 系統全方位健康診斷報告</b>",
             "",
@@ -313,9 +272,6 @@ class GVWDoctor:
             f"• Telegram API：<code>{tg_str}</code>",
             f"• TWSE 證交所：<code>{twse_str}</code>",
             f"• 主力 AI 模型：{ai_str}",
-            "",
-            "🗄️ <b>資料庫健康：</b>",
-            f"• SQLite 完整性：<code>{db_tag}</code> (共 {db_size} MB)",
         ]
         return "\n".join([line for line in lines if line is not None])
 
@@ -327,7 +283,6 @@ class GVWDoctor:
         Executes safe self-healing actions:
         - Rotates oversized logs
         - Clears stale temporary / lock files
-        - VACUUM compresses SQLite databases (skipped when light=True, e.g. during market hours)
         - Automatically fails over AI provider if primary is down
         """
         actions = []
@@ -358,20 +313,6 @@ class GVWDoctor:
                 actions.append(f"已清理 {cleared} 個殘留鎖檔 (*.lock)")
         except Exception as e:
             logger.warning(f"Remediation lock cleanup failed: {e}")
-
-        # 3. VACUUM SQLite databases (heavy; skipped in light mode to protect market-hours service)
-        try:
-            db_files = [] if light else glob.glob(os.path.join(self.data_dir, "*.db"))
-            vacuumed = 0
-            for db in db_files:
-                conn = sqlite3.connect(db, timeout=10)
-                conn.execute("VACUUM;")
-                conn.close()
-                vacuumed += 1
-            if vacuumed > 0:
-                actions.append(f"已執行 SQLite VACUUM 最佳化 ({vacuumed} 個資料庫)")
-        except Exception as e:
-            logger.warning(f"Remediation SQLite vacuum failed: {e}")
 
         # 4. Auto AI Failover
         try:
