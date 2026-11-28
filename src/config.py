@@ -5,10 +5,7 @@ from typing import Optional
 def _find_env_file() -> Optional[str]:
     candidate_paths = [
         os.path.join(os.getcwd(), ".env"),
-        "/home/pi/gvw_screener/.env",
-        os.path.expanduser("~/gvw_screener/.env"),
         os.path.expanduser("~/.hermes/.env"),
-        "/home/pi/.hermes/.env",
         os.path.expanduser("~/.env")
     ]
     for path in candidate_paths:
@@ -97,12 +94,7 @@ def _resolve_base_dir() -> str:
     # 1. Custom ENV override
     if os.environ.get("GVW_HOME"):
         return os.environ["GVW_HOME"]
-    # 2. Raspberry Pi server environment
-    if os.path.exists("/home/pi/gvw_screener"):
-        return "/home/pi/gvw_screener"
-    if os.path.exists("/home/pi/.hermes/gvw_screener"):
-        return "/home/pi/.hermes/gvw_screener"
-    # 3. Local repository workspace
+    # 2. Local repository workspace
     return os.getcwd()
 
 BASE_DIR = _resolve_base_dir()
